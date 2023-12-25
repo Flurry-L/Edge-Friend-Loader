@@ -17,7 +17,7 @@ file(GLOB_RECURSE HEADERS "include/*.h" "include/*.hpp")
 file(GLOB_RECURSE HLSL_FILES "hlsl/*.hlsl")
 
 # 添加可执行文件
-add_executable(${PROJECT_NAME} WIN32 ${SOURCES} ${HEADERS} ${HLSL_FILES})
+add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS} ${HLSL_FILES} "include/dx.h" "src/dx.cpp")
 
 # 根据你的需求链接库
 # target_link_libraries(${PROJECT_NAME} your_libraries_here)

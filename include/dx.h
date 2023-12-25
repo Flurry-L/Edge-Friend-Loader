@@ -1,48 +1,58 @@
-//
-// Copyright (c) 2016 Advanced Micro Devices, Inc. All rights reserved.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-// THE SOFTWARE.
-//
+#include <d3d12.h>
+#include <wrl.h>
+#include <dxgi.h>
+#include <dxgi1_6.h>
+#include <d3dcompiler.h>
+#include <iostream>
+#include <vector>
+#include <d3dx12.h>
+#include <fstream>
+#include <string>
+#include <sstream>
 
-#ifndef DX_H_
-#define DX_H_
+using Microsoft::WRL::ComPtr;
 
-#include "D3D12Sample.h"
+class EdgefriendDX12 {
+public:
+    void Init();
+    void CreateResources();
 
-namespace AMD {
-	class DX : public D3D12Sample
-	{
-	private:
-		void CreateRootSignature();
-		void CreatePipelineStateObject();
-		void CreateMeshBuffers(ID3D12GraphicsCommandList* uploadCommandList);
-		void RenderImpl(ID3D12GraphicsCommandList* commandList) override;
-		void InitializeImpl(ID3D12GraphicsCommandList* uploadCommandList) override;
+    void Dispatch(int faceCount, int vertexCount, float sharpness);
 
-		Microsoft::WRL::ComPtr<ID3D12Resource> uploadBuffer_;
+private:
+    ID3D12Device* m_device;
+    ID3D12GraphicsCommandList* m_cmdList;
+    ComPtr<ID3D12RootSignature> m_rootSignature;
+    ComPtr<ID3D12PipelineState> m_pipelineState;
+    ComPtr<ID3D12CommandAllocator> m_commandAllocator;
+    ComPtr<ID3D12CommandQueue> m_computeCommandQueue;
+    ComPtr<ID3D12GraphicsCommandList> m_computeCommandList;
 
-		Microsoft::WRL::ComPtr<ID3D12Resource> vertexBuffer_;
-		D3D12_VERTEX_BUFFER_VIEW vertexBufferView_;
+    // Resources
+    ComPtr<ID3D12Resource> m_constantBuffer;
+    ComPtr<ID3D12Resource> m_positionBufferIn;
+    ComPtr<ID3D12Resource> m_indexBufferIn;
+    ComPtr<ID3D12Resource> m_friendAndSharpnessBufferIn;
+    ComPtr<ID3D12Resource> m_valenceStartInfoBufferIn;
+    ComPtr<ID3D12Resource> m_positionBufferOut;
+    ComPtr<ID3D12Resource> m_indexBufferOut;
+    ComPtr<ID3D12Resource> m_friendAndSharpnessBufferOut;
+    ComPtr<ID3D12Resource> m_valenceStartInfoBufferOut;
 
-		Microsoft::WRL::ComPtr<ID3D12Resource> indexBuffer_;
-		D3D12_INDEX_BUFFER_VIEW indexBufferView_;
-	};
-}
+    // Methods to create and initialize the resources
+    void CreateDevice();
+    void CreateRootSignature();
+    void CreateComputePipelineStateObject();
+    void CreateComputeCommands();
+    void UpdateConstantBuffer(int faceCount, int vertexCount, float sharpness);
+};
 
-#endif
+// Constructor
+//EdgefriendDX12::EdgefriendDX12(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
+//    : m_device(device), m_cmdList(cmdList) {
+//    CreateResources();
+//    CreateRootSignature();
+//    CreatePipelineState();
+//}
+
+// Method implementations would go here...
