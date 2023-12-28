@@ -1,10 +1,3 @@
-struct EdgefriendRootConstants
-{
-    int F; // face count
-    int V; // vertex count
-};
-
-//ConstantBuffer<EdgefriendRootConstants> oldSize : register(b0);
 cbuffer oldSize : register(b0)
 {
     int F; // face count
