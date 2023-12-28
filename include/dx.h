@@ -11,7 +11,6 @@
 #include <sstream>
 
 
-
 using Microsoft::WRL::ComPtr;
 
 
@@ -36,6 +35,30 @@ public:
     void Dispatch(int faceCount, int vertexCount, float sharpness);
 
 private:
+    static const UINT ThreadCount = 1;
+
+    enum ComputeRootParameters : UINT32
+    {
+        ComputeRootCBV = 0,
+        ComputeRootSRVTable,
+        ComputeRootUAVTable,
+        ComputeRootParametersCount
+    };
+
+    // Indices of shader resources in the descriptor heap.
+    enum DescriptorHeapIndex : UINT32
+    {
+        UavPosOut = 0,
+        UavIndexOut = UavPosOut + ThreadCount,
+        UavFriendOut = UavIndexOut + ThreadCount,
+        UavValenceOut = UavFriendOut + ThreadCount,
+        SrvPosIn = UavValenceOut + ThreadCount,
+        SrvIndexIn = SrvPosIn + ThreadCount,
+        SrvFriendIn = SrvIndexIn + ThreadCount,
+        SrvValenceIn = SrvFriendIn + ThreadCount,
+        DescriptorCount = SrvValenceIn + ThreadCount
+    };
+
     ID3D12Device* m_device;
     ComPtr<ID3D12RootSignature> m_rootSignature;
     ComPtr<ID3D12PipelineState> m_pipelineState;
@@ -54,25 +77,14 @@ private:
     ComPtr<ID3D12Resource> m_friendAndSharpnessBufferOut;
     ComPtr<ID3D12Resource> m_valenceStartInfoBufferOut;
 
-    ComPtr<ID3D12DescriptorHeap> m_descHeap;
+    ComPtr<ID3D12DescriptorHeap> m_srvUavHeap;
+    UINT m_srvUavDescriptorSize;
 
     // Methods to create and initialize the resources
-    void CreateDevice();
-    void CreateRootSignature();
-    void CreateComputePipelineStateObject();
-    void CreateComputeCommands();
+    void LoadPipeline();
+    void LoadAssets();
 
-    void CreateDescriptorHeap();
-    void UploadDataAndCreateView();
 
-    void Compute();
-
-    void CreateCBV(D3D12_CPU_DESCRIPTOR_HANDLE handle, OldSizeConstants& constants);
-    void CreateSRV(D3D12_CPU_DESCRIPTOR_HANDLE handle, int numPositionElements, int numIndexElements, int numFriendAndSharpnessElements, int numValenceStartInfoElements);
-    void CreateUAV(D3D12_CPU_DESCRIPTOR_HANDLE handle, int numPositionElements, int numIndexElements, int numFriendAndSharpnessElements, int numValenceStartInfoElements);
-    /*void CreateBuffers();
-    void CreateResources();
-    void UpdateConstantBuffer(int faceCount, int vertexCount, float sharpness);*/
 };
 
 // Constructor
