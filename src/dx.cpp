@@ -45,12 +45,12 @@ int EdgefriendDX12::LoadObj(const std::filesystem::path& file) {
         startIndex += faceSize;
     }
 
-    ankerl::unordered_dense::map<glm::ivec2, float> creases;
+    /*ankerl::unordered_dense::map<glm::ivec2, float> creases;
     creases.reserve(objmesh.creases.size());
     for (const auto& crease : objmesh.creases) {
         const auto [min, max] = std::minmax(crease.position_index_from, crease.position_index_to);
         creases.emplace(glm::ivec2(min, max), crease.sharpness);
-    }
+    }*/
 
 }
 
@@ -217,7 +217,7 @@ void EdgefriendDX12::LoadAssets() {
 
     // Create the compute shader's constant buffer.
     {
-        const UINT bufferSize = sizeof(ConstantBufferCS);
+        const UINT bufferSize = (sizeof(ConstantBufferCS) + 255) & ~255; // Align to 256 bytes
 
         CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
         CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize);
@@ -242,12 +242,11 @@ void EdgefriendDX12::LoadAssets() {
             IID_PPV_ARGS(&constantBufferCSUpload)));
 
         NAME_D3D12_OBJECT(m_constantBufferCS);
+        NAME_D3D12_OBJECT(constantBufferCSUpload);
 
         ConstantBufferCS constantBufferCS = {};
         constantBufferCS.F = 1;
         constantBufferCS.V = 1;
-        constantBufferCS.sharpnessFactor = 1.f;
-        constantBufferCS.padding = 0;
 
         D3D12_SUBRESOURCE_DATA computeCBData = {};
         computeCBData.pData = reinterpret_cast<UINT8*>(&constantBufferCS);
@@ -263,13 +262,38 @@ void EdgefriendDX12::LoadAssets() {
 
         // Invoke the command list's ResourceBarrier function
         m_computeCommandList->ResourceBarrier(1, &barrier);
-        //m_computeCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(m_constantBufferCS.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
     }
 
     // Close the command list and execute it to begin the initial GPU setup.
     ThrowIfFailed(m_computeCommandList->Close());
     ID3D12CommandList* ppCommandLists[] = { m_computeCommandList.Get() };
     m_computeCommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+
+    // Create synchronization objects and wait until assets have been uploaded to the GPU.
+    {
+        ThrowIfFailed(m_device->CreateFence(m_renderContextFenceValue, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_renderContextFence)));
+        m_renderContextFenceValue++;
+
+        m_renderContextFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        if (m_renderContextFenceEvent == nullptr)
+        {
+            ThrowIfFailed(HRESULT_FROM_WIN32(GetLastError()));
+        }
+
+        WaitForRenderContext();
+    }
+}
+
+void EdgefriendDX12::WaitForRenderContext() {
+    // Add a signal command to the queue.
+    ThrowIfFailed(m_computeCommandQueue->Signal(m_renderContextFence.Get(), m_renderContextFenceValue));
+
+    // Instruct the fence to set the event object when the signal command completes.
+    ThrowIfFailed(m_renderContextFence->SetEventOnCompletion(m_renderContextFenceValue, m_renderContextFenceEvent));
+    m_renderContextFenceValue++;
+
+    // Wait until the signal command has been processed.
+    WaitForSingleObject(m_renderContextFenceEvent, INFINITE);
 }
 
 void EdgefriendDX12::CreateBuffers() {

@@ -28,8 +28,7 @@ public:
     {
         int F; // face count
         int V; // vertex count
-        float sharpnessFactor;
-        float padding; // Padding to ensure the buffer size is a multiple of 16 bytes
+        float sharpnessFactor; 
     };
 
     int LoadObj(const std::filesystem::path& file);
@@ -91,21 +90,19 @@ private:
     ComPtr<ID3D12DescriptorHeap> m_srvUavHeap;
     UINT m_srvUavDescriptorSize;
 
+    ComPtr<ID3D12Fence> m_renderContextFence;
+    UINT64 m_renderContextFenceValue;
+    HANDLE m_renderContextFenceEvent;
+
+    ComPtr<ID3D12Fence> m_threadFences[ThreadCount];
+    volatile HANDLE m_threadFenceEvents[ThreadCount];
+
     // Methods to create and initialize the resources
     void LoadPipeline();
     void LoadAssets();
 
 
     void CreateBuffers();
+    void WaitForRenderContext();
 
 };
-
-// Constructor
-//EdgefriendDX12::EdgefriendDX12(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
-//    : m_device(device), m_cmdList(cmdList) {
-//    CreateResources();
-//    CreateRootSignature();
-//    CreatePipelineState();
-//}
-
-// Method implementations would go here...
