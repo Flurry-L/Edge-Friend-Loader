@@ -1,3 +1,4 @@
+#include "rapidobj.hpp"
 #include <d3d12.h>
 #include <wrl.h>
 #include <dxgi.h>
@@ -9,15 +10,21 @@
 #include <fstream>
 #include <string>
 #include <sstream>
+#include <DirectXMath.h>
+#include <span>
+#include <glm/glm.hpp> 
+#include "unordered_dense.h"
 
+
+#include <glm/glm.hpp> 
 
 using Microsoft::WRL::ComPtr;
-
+using namespace DirectX;
 
 class EdgefriendDX12 {
 public:
 
-    struct OldSizeConstants
+    struct ConstantBufferCS
     {
         int F; // face count
         int V; // vertex count
@@ -25,17 +32,15 @@ public:
         float padding; // Padding to ensure the buffer size is a multiple of 16 bytes
     };
 
-    struct float3 {
-        float x, y, z;
-    };
-    
-    void Init();
+    int LoadObj(const std::filesystem::path& file);
+    void OnInit();
     
 
     void Dispatch(int faceCount, int vertexCount, float sharpness);
 
 private:
     static const UINT ThreadCount = 1;
+    static const UINT posInCount = 100;
 
     enum ComputeRootParameters : UINT32
     {
@@ -67,12 +72,18 @@ private:
     ComPtr<ID3D12GraphicsCommandList> m_computeCommandList;
 
     // Resources
-    ComPtr<ID3D12Resource> m_constantBuffer;
-    ComPtr<ID3D12Resource> m_positionBufferIn;
+    ComPtr<ID3D12Resource> m_constantBufferCS;
+
+    ComPtr<ID3D12Resource> m_positionBufferIn[ThreadCount];
+    ComPtr<ID3D12Resource> m_positionBufferInUpload[ThreadCount];
+
     ComPtr<ID3D12Resource> m_indexBufferIn;
     ComPtr<ID3D12Resource> m_friendAndSharpnessBufferIn;
     ComPtr<ID3D12Resource> m_valenceStartInfoBufferIn;
-    ComPtr<ID3D12Resource> m_positionBufferOut;
+
+    ComPtr<ID3D12Resource> m_positionBufferOut[ThreadCount];
+    ComPtr<ID3D12Resource> m_positionBufferOutUpload[ThreadCount];
+
     ComPtr<ID3D12Resource> m_indexBufferOut;
     ComPtr<ID3D12Resource> m_friendAndSharpnessBufferOut;
     ComPtr<ID3D12Resource> m_valenceStartInfoBufferOut;
@@ -84,6 +95,8 @@ private:
     void LoadPipeline();
     void LoadAssets();
 
+
+    void CreateBuffers();
 
 };
 
