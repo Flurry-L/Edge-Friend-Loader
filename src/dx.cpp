@@ -1,30 +1,27 @@
-#include "dx.h"
+﻿#include "dx.h"
 #include "DXSampleHelper.h"
-
+#include <glm/gtx/hash.hpp>
 #include <stdexcept>
 
 using Microsoft::WRL::ComPtr;
 
-void EdgefriendDX12::OnInit() {
-    LoadPipeline();
-    LoadAssets();
-}
-
-
-int EdgefriendDX12::LoadObj(const std::filesystem::path& file) {
+int EdgefriendDX12::LoadObj(std::filesystem::path& file) {
     auto model = rapidobj::ParseFile(file);
     if (model.error) {
         std::cerr << "Error: OBJ file" << file << "could not be loaded.";
         return 2;
     }
+
     if (model.shapes.size() == 0) {
         std::cerr << "Error: OBJ file" << file << "does not contain a mesh.";
         return 3;
     }
+
     const auto& objmesh = model.shapes.front().mesh;
     if (model.shapes.size() != 1) {
         std::cerr << "Warning: demo will only process the first shape/object!";
     }
+
     auto positionSpan = std::span<glm::vec3>(
         reinterpret_cast<glm::vec3*>(model.attributes.positions.data()), model.attributes.positions.size() / 3);
 
@@ -45,14 +42,19 @@ int EdgefriendDX12::LoadObj(const std::filesystem::path& file) {
         startIndex += faceSize;
     }
 
-    /*ankerl::unordered_dense::map<glm::ivec2, float> creases;
+    ankerl::unordered_dense::map<glm::ivec2, float> creases;
     creases.reserve(objmesh.creases.size());
     for (const auto& crease : objmesh.creases) {
         const auto [min, max] = std::minmax(crease.position_index_from, crease.position_index_to);
         creases.emplace(glm::ivec2(min, max), crease.sharpness);
-    }*/
-
+    }
 }
+
+void EdgefriendDX12::OnInit() {
+    LoadPipeline();
+    LoadAssets();
+}
+
 
 void EdgefriendDX12::LoadPipeline() {
     UINT dxgiFactoryFlags = 0;
@@ -132,8 +134,8 @@ void EdgefriendDX12::LoadPipeline() {
     queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 
-    ThrowIfFailed(m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_computeCommandQueue)));
-    NAME_D3D12_OBJECT(m_computeCommandQueue);
+    ThrowIfFailed(m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_commandQueue)));
+    NAME_D3D12_OBJECT(m_commandQueue);
 
     // create descriptor heap
     {
@@ -217,21 +219,21 @@ void EdgefriendDX12::LoadAssets() {
 
     // Create the compute shader's constant buffer.
     {
-        const UINT bufferSize = (sizeof(ConstantBufferCS) + 255) & ~255; // Align to 256 bytes
+        const UINT constantBufferSize = (sizeof(ConstantBufferCS) + 255) & ~255; // Align to 256 bytes
 
-        CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
-        CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize);
+        CD3DX12_HEAP_PROPERTIES constantBufferHeapProps(D3D12_HEAP_TYPE_DEFAULT);
+        CD3DX12_RESOURCE_DESC constantBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(constantBufferSize);
 
         ThrowIfFailed(m_device->CreateCommittedResource(
-            &heapProps,
+            &constantBufferHeapProps,
             D3D12_HEAP_FLAG_NONE,
-            &resourceDesc,
+            &constantBufferDesc,
             D3D12_RESOURCE_STATE_COPY_DEST,
             nullptr,
             IID_PPV_ARGS(&m_constantBufferCS)));
 
         CD3DX12_HEAP_PROPERTIES heapPropsUpload(D3D12_HEAP_TYPE_UPLOAD);
-        CD3DX12_RESOURCE_DESC resourceDescUpload = CD3DX12_RESOURCE_DESC::Buffer(bufferSize);
+        CD3DX12_RESOURCE_DESC resourceDescUpload = CD3DX12_RESOURCE_DESC::Buffer(constantBufferSize);
 
         ThrowIfFailed(m_device->CreateCommittedResource(
             &heapPropsUpload,
@@ -250,7 +252,7 @@ void EdgefriendDX12::LoadAssets() {
 
         D3D12_SUBRESOURCE_DATA computeCBData = {};
         computeCBData.pData = reinterpret_cast<UINT8*>(&constantBufferCS);
-        computeCBData.RowPitch = bufferSize;
+        computeCBData.RowPitch = constantBufferSize;
         computeCBData.SlicePitch = computeCBData.RowPitch;
 
         UpdateSubresources<1>(m_computeCommandList.Get(), m_constantBufferCS.Get(), constantBufferCSUpload.Get(), 0, 0, 1, &computeCBData);
@@ -267,7 +269,7 @@ void EdgefriendDX12::LoadAssets() {
     // Close the command list and execute it to begin the initial GPU setup.
     ThrowIfFailed(m_computeCommandList->Close());
     ID3D12CommandList* ppCommandLists[] = { m_computeCommandList.Get() };
-    m_computeCommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+    m_commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
 
     // Create synchronization objects and wait until assets have been uploaded to the GPU.
     {
@@ -286,7 +288,7 @@ void EdgefriendDX12::LoadAssets() {
 
 void EdgefriendDX12::WaitForRenderContext() {
     // Add a signal command to the queue.
-    ThrowIfFailed(m_computeCommandQueue->Signal(m_renderContextFence.Get(), m_renderContextFenceValue));
+    ThrowIfFailed(m_commandQueue->Signal(m_renderContextFence.Get(), m_renderContextFenceValue));
 
     // Instruct the fence to set the event object when the signal command completes.
     ThrowIfFailed(m_renderContextFence->SetEventOnCompletion(m_renderContextFenceValue, m_renderContextFenceEvent));
@@ -308,59 +310,59 @@ void EdgefriendDX12::CreateBuffers() {
     D3D12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(posInSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
     D3D12_RESOURCE_DESC uploadBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(posInSize);
 
-    for (UINT index = 0; index < ThreadCount; index++) {
-        ThrowIfFailed(m_device->CreateCommittedResource(
-            &defaultHeapProperties,
-            D3D12_HEAP_FLAG_NONE,
-            &bufferDesc,
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            nullptr,
-            IID_PPV_ARGS(&m_positionBufferIn[index])));
 
-        ThrowIfFailed(m_device->CreateCommittedResource(
-            &uploadHeapProperties,
-            D3D12_HEAP_FLAG_NONE,
-            &uploadBufferDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            nullptr,
-            IID_PPV_ARGS(&m_positionBufferInUpload[index])));
+    ThrowIfFailed(m_device->CreateCommittedResource(
+        &defaultHeapProperties,
+        D3D12_HEAP_FLAG_NONE,
+        &bufferDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(&m_positionBufferIn)));
 
-        NAME_D3D12_OBJECT_INDEXED(m_positionBufferIn, index);
+    ThrowIfFailed(m_device->CreateCommittedResource(
+        &uploadHeapProperties,
+        D3D12_HEAP_FLAG_NONE,
+        &uploadBufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&m_positionBufferInUpload)));
 
-        D3D12_SUBRESOURCE_DATA posInData = {};
-        posInData.pData = reinterpret_cast<UINT8*>(&posIn[0]);
-        posInData.RowPitch = posInSize;
-        posInData.SlicePitch = posInData.RowPitch;
+    NAME_D3D12_OBJECT(m_positionBufferIn);
 
-        UpdateSubresources<1>(m_computeCommandList.Get(), m_positionBufferIn[index].Get(), m_positionBufferInUpload[index].Get(), 0, 0, 1, &posInData);
+    D3D12_SUBRESOURCE_DATA posInData = {};
+    posInData.pData = reinterpret_cast<UINT8*>(&posIn[0]);
+    posInData.RowPitch = posInSize;
+    posInData.SlicePitch = posInData.RowPitch;
+
+    UpdateSubresources<1>(m_computeCommandList.Get(), m_positionBufferIn.Get(), m_positionBufferInUpload.Get(), 0, 0, 1, &posInData);
         
-        D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(m_positionBufferIn[index].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        m_computeCommandList->ResourceBarrier(1, &barrier);
+    D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(m_positionBufferIn.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    m_computeCommandList->ResourceBarrier(1, &barrier);
 
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Format = DXGI_FORMAT_UNKNOWN;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        srvDesc.Buffer.FirstElement = 0;
-        srvDesc.Buffer.NumElements = posInCount;
-        srvDesc.Buffer.StructureByteStride = sizeof(XMFLOAT3);
-        srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    srvDesc.Buffer.FirstElement = 0;
+    srvDesc.Buffer.NumElements = posInCount;
+    srvDesc.Buffer.StructureByteStride = sizeof(XMFLOAT3);
+    srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 
-        CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandlePosIn(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), SrvPosIn + index, m_srvUavDescriptorSize);
-        m_device->CreateShaderResourceView(m_positionBufferIn[index].Get(), &srvDesc, srvHandlePosIn);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandlePosIn(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), SrvPosIn, m_srvUavDescriptorSize);
+    m_device->CreateShaderResourceView(m_positionBufferIn.Get(), &srvDesc, srvHandlePosIn);
 
-        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-        uavDesc.Format = DXGI_FORMAT_UNKNOWN;
-        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        uavDesc.Buffer.FirstElement = 0;
-        uavDesc.Buffer.NumElements = posInCount;
-        // maybe posOut?
-        uavDesc.Buffer.StructureByteStride = sizeof(XMFLOAT3);
-        uavDesc.Buffer.CounterOffsetInBytes = 0;
-        uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+    uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    uavDesc.Buffer.FirstElement = 0;
+    uavDesc.Buffer.NumElements = posInCount;
+    // maybe posOut?
+    uavDesc.Buffer.StructureByteStride = sizeof(XMFLOAT3);
+    uavDesc.Buffer.CounterOffsetInBytes = 0;
+    uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 
-        CD3DX12_CPU_DESCRIPTOR_HANDLE uavHandlePosOut(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), UavPosOut + index, m_srvUavDescriptorSize);
-        m_device->CreateUnorderedAccessView(m_positionBufferOut[index].Get(), nullptr, &uavDesc, uavHandlePosOut);
-    }
+    CD3DX12_CPU_DESCRIPTOR_HANDLE uavHandlePosOut(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), UavPosOut, m_srvUavDescriptorSize);
+    m_device->CreateUnorderedAccessView(m_positionBufferOut.Get(), nullptr, &uavDesc, uavHandlePosOut);
+    
 
 }

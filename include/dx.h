@@ -1,4 +1,3 @@
-#include "rapidobj.hpp"
 #include <d3d12.h>
 #include <wrl.h>
 #include <dxgi.h>
@@ -11,12 +10,12 @@
 #include <string>
 #include <sstream>
 #include <DirectXMath.h>
+
+#include "rapidobj.hpp"
 #include <span>
-#include <glm/glm.hpp> 
+#include <glm/glm.hpp>
 #include "unordered_dense.h"
 
-
-#include <glm/glm.hpp> 
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -38,7 +37,6 @@ public:
     void Dispatch(int faceCount, int vertexCount, float sharpness);
 
 private:
-    static const UINT ThreadCount = 1;
     static const UINT posInCount = 100;
 
     enum ComputeRootParameters : UINT32
@@ -53,35 +51,35 @@ private:
     enum DescriptorHeapIndex : UINT32
     {
         UavPosOut = 0,
-        UavIndexOut = UavPosOut + ThreadCount,
-        UavFriendOut = UavIndexOut + ThreadCount,
-        UavValenceOut = UavFriendOut + ThreadCount,
-        SrvPosIn = UavValenceOut + ThreadCount,
-        SrvIndexIn = SrvPosIn + ThreadCount,
-        SrvFriendIn = SrvIndexIn + ThreadCount,
-        SrvValenceIn = SrvFriendIn + ThreadCount,
-        DescriptorCount = SrvValenceIn + ThreadCount
+        UavIndexOut,
+        UavFriendOut,
+        UavValenceOut,
+        SrvPosIn,
+        SrvIndexIn,
+        SrvFriendIn,
+        SrvValenceIn,
+        DescriptorCount
     };
 
     ID3D12Device* m_device;
     ComPtr<ID3D12RootSignature> m_rootSignature;
     ComPtr<ID3D12PipelineState> m_pipelineState;
     ComPtr<ID3D12CommandAllocator> m_commandAllocator;
-    ComPtr<ID3D12CommandQueue> m_computeCommandQueue;
+    ComPtr<ID3D12CommandQueue> m_commandQueue;
     ComPtr<ID3D12GraphicsCommandList> m_computeCommandList;
 
     // Resources
     ComPtr<ID3D12Resource> m_constantBufferCS;
 
-    ComPtr<ID3D12Resource> m_positionBufferIn[ThreadCount];
-    ComPtr<ID3D12Resource> m_positionBufferInUpload[ThreadCount];
+    ComPtr<ID3D12Resource> m_positionBufferIn;
+    ComPtr<ID3D12Resource> m_positionBufferInUpload;
 
     ComPtr<ID3D12Resource> m_indexBufferIn;
     ComPtr<ID3D12Resource> m_friendAndSharpnessBufferIn;
     ComPtr<ID3D12Resource> m_valenceStartInfoBufferIn;
 
-    ComPtr<ID3D12Resource> m_positionBufferOut[ThreadCount];
-    ComPtr<ID3D12Resource> m_positionBufferOutUpload[ThreadCount];
+    ComPtr<ID3D12Resource> m_positionBufferOut;
+    ComPtr<ID3D12Resource> m_positionBufferOutUpload;
 
     ComPtr<ID3D12Resource> m_indexBufferOut;
     ComPtr<ID3D12Resource> m_friendAndSharpnessBufferOut;
@@ -94,8 +92,8 @@ private:
     UINT64 m_renderContextFenceValue;
     HANDLE m_renderContextFenceEvent;
 
-    ComPtr<ID3D12Fence> m_threadFences[ThreadCount];
-    volatile HANDLE m_threadFenceEvents[ThreadCount];
+    ComPtr<ID3D12Fence> m_threadFences;
+    volatile HANDLE m_threadFenceEvents;
 
     // Methods to create and initialize the resources
     void LoadPipeline();
@@ -105,4 +103,5 @@ private:
     void CreateBuffers();
     void WaitForRenderContext();
 
+    int LoadObj(std::filesystem::path& file);
 };

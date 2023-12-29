@@ -1,24 +1,30 @@
-cmake_minimum_required(VERSION 3.15) # 指定CMake的最低版本要求
+cmake_minimum_required(VERSION 3.15)
 
-project(MyProject) # 设置这个项目的名字
+project(edgefriend LANGUAGES CXX C)
 
 # 设置C++标准
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+#find_package(RapidObj REQUIRED)
+
 add_subdirectory(glm)
-# 包含头文件目录
-include_directories(include)
+add_compile_definitions(NOMINMAX)
+# 创建 edgefriend 库
+add_library(edgefriend)
 
-# 自动将当前目录的源文件和头文件加入
-file(GLOB_RECURSE SOURCES "src/*.cpp")
-file(GLOB_RECURSE HEADERS "include/*.h" "include/*.hpp")
+target_include_directories(edgefriend PUBLIC include)
+file(GLOB_RECURSE EDGEFRIEND_SOURCES "src/*.cpp")
+target_sources(edgefriend PRIVATE ${EDGEFRIEND_SOURCES}  )
 
-# 如果你想要将hlsl文件添加到你的项目中，可以使用以下命令
-file(GLOB_RECURSE HLSL_FILES "hlsl/*.hlsl")
+target_link_libraries(edgefriend PUBLIC glm::glm)
 
-# 添加可执行文件
-add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS} ${HLSL_FILES} "include/dx.h" "src/dx.cpp" "include/DXSampleHelper.h")
+# 创建 edgefriend_demo 可执行文件
+add_executable(edgefriend_demo)
 
-# 根据你的需求链接库
-# target_link_libraries(${PROJECT_NAME} your_libraries_here)
-target_link_libraries(${PROJECT_NAME} PRIVATE d3d12.lib dxgi.lib dxguid.lib d3dcompiler.lib glm::glm)
+target_include_directories(edgefriend_demo PRIVATE include)
+file(GLOB_RECURSE EDGEFRIEND_DEMO_SOURCES "src/*.cpp")
+target_sources(edgefriend_demo PRIVATE ${EDGEFRIEND_DEMO_SOURCES}  )
+
+# 链接库和依赖项
+target_link_libraries(edgefriend_demo PRIVATE edgefriend d3d12.lib dxgi.lib dxguid.lib d3dcompiler.lib)

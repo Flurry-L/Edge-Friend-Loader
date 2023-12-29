@@ -1,4 +1,4 @@
-/*
+﻿/*
 
 rapidobj - Fast Wavefront .obj file loader
 
@@ -42,8 +42,6 @@ OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 #include <utility>
 #include <variant>
 #include <vector>
-
-#include <chrono>
 
 #ifdef __linux__
 
@@ -4350,7 +4348,7 @@ struct Buffer final {
     void ensure_enough_room_for(size_t size)
     {
         if (size > m_room) {
-            auto cap = (std::max)(kInitialSize, 2 * (m_size + size));
+            auto cap = std::max(kInitialSize, 2 * (m_size + size));
             auto src = std::unique_ptr<T[]>(std::move(m_data));
             m_data.reset(new T[cap]);
             if (src) {
@@ -4711,7 +4709,7 @@ struct FillIds final {
         auto start = m_start;
 
         while (size > 0 && index < m_src->size() - 1) {
-            auto count = (std::min)(size, m_src->at(index + 1).offset - start);
+            auto count = std::min(size, m_src->at(index + 1).offset - start);
             std::fill_n(dst, count, m_src->at(index).id);
             start += count;
             dst += count;

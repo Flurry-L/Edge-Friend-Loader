@@ -1,5 +1,5 @@
 #include "dx.h"
-
+#include "rapidobj.hpp"
 
 int main()
 {
