@@ -15,7 +15,7 @@ add_library(edgefriend)
 
 target_include_directories(edgefriend PUBLIC include)
 file(GLOB_RECURSE EDGEFRIEND_SOURCES "src/*.cpp")
-target_sources(edgefriend PRIVATE ${EDGEFRIEND_SOURCES}  )
+target_sources(edgefriend PRIVATE ${EDGEFRIEND_SOURCES}   "src/edgefriend.cpp" "include/edgefriend.h")
 
 target_link_libraries(edgefriend PUBLIC glm::glm)
 
@@ -24,7 +24,7 @@ add_executable(edgefriend_demo)
 
 target_include_directories(edgefriend_demo PRIVATE include)
 file(GLOB_RECURSE EDGEFRIEND_DEMO_SOURCES "src/*.cpp")
-target_sources(edgefriend_demo PRIVATE ${EDGEFRIEND_DEMO_SOURCES}  )
+target_sources(edgefriend_demo PRIVATE ${EDGEFRIEND_DEMO_SOURCES}   "src/edgefriend.cpp" "include/edgefriend.h")
 
 # 链接库和依赖项
 target_link_libraries(edgefriend_demo PRIVATE edgefriend d3d12.lib dxgi.lib dxguid.lib d3dcompiler.lib)

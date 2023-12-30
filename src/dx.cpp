@@ -5,16 +5,16 @@
 
 using Microsoft::WRL::ComPtr;
 
-int EdgefriendDX12::LoadObj(std::filesystem::path& file) {
+void EdgefriendDX12::LoadObj() {
     auto model = rapidobj::ParseFile(file);
     if (model.error) {
         std::cerr << "Error: OBJ file" << file << "could not be loaded.";
-        return 2;
+        return;
     }
 
     if (model.shapes.size() == 0) {
         std::cerr << "Error: OBJ file" << file << "does not contain a mesh.";
-        return 3;
+        return;
     }
 
     const auto& objmesh = model.shapes.front().mesh;
@@ -48,9 +48,20 @@ int EdgefriendDX12::LoadObj(std::filesystem::path& file) {
         const auto [min, max] = std::minmax(crease.position_index_from, crease.position_index_to);
         creases.emplace(glm::ivec2(min, max), crease.sharpness);
     }
+
+    PreProcess(positions, indices, indicesOffsets, creases);
+}
+
+void EdgefriendDX12::PreProcess(std::vector<glm::vec3> oldPositions,
+    std::vector<int> oldIndices,
+    std::vector<int> oldIndicesOffsets,
+    ankerl::unordered_dense::map<glm::ivec2, float> oldCreases) {
+    
+    orig_geometry = Edgefriend::SubdivideToEdgefriendGeometry(oldPositions, oldIndices, oldIndicesOffsets, oldCreases);
 }
 
 void EdgefriendDX12::OnInit() {
+    // LoadObj();
     LoadPipeline();
     LoadAssets();
 }

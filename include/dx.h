@@ -16,6 +16,7 @@
 #include <glm/glm.hpp>
 #include "unordered_dense.h"
 
+#include "edgefriend.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -37,30 +38,26 @@ public:
     void Dispatch(int faceCount, int vertexCount, float sharpness);
 
 private:
+    std::filesystem::path file;
+
+    Edgefriend::EdgefriendGeometry orig_geometry;
+
     UINT posInCount;
     std::vector<XMFLOAT3> posIn;
-
     UINT indexInCount;
     std::vector<unsigned char> indexIn;
-
     UINT sharpnessInCount;
     std::vector<unsigned char> sharpnessIn;
-
     UINT valenceInCount;
     std::vector<int> valenceIn;
-
     UINT posOutCount;
     std::vector<XMFLOAT3> posOut;
-
     UINT indexOutCount;
     std::vector<unsigned char> indexOut;
-
     UINT sharpnessOutCount;
     std::vector<unsigned char> sharpnessOut;
-
     UINT valenceOutCount;
     std::vector<int> valenceOut;
-
 
     enum ComputeRootParameters : UINT32
     {
@@ -131,5 +128,9 @@ private:
     void CreateBuffers();
     void WaitForRenderContext();
 
-    int LoadObj(std::filesystem::path& file);
+    void LoadObj();
+    void PreProcess(std::vector<glm::vec3> oldPositions,
+        std::vector<int> oldIndices,
+        std::vector<int> oldIndicesOffsets,
+        ankerl::unordered_dense::map<glm::ivec2, float> oldCreases);
 };
