@@ -299,70 +299,239 @@ void EdgefriendDX12::WaitForRenderContext() {
 }
 
 void EdgefriendDX12::CreateBuffers() {
-    std::vector<XMFLOAT3> posIn;
-    posIn.resize(posInCount);
-    const UINT posInSize = posInCount * sizeof(XMFLOAT3);
+    posInCount = 1;
+    posIn.resize(1);
+    indexInCount = 1;
+    indexIn.resize(1);
+    sharpnessInCount = 1;
+    sharpnessIn.resize(1);
+    valenceInCount = 1;
+    valenceIn.resize(1);
 
-    // load data
+    posOutCount = 1;
+    posOut.resize(1);
+    indexOutCount = 1;
+    indexOut.resize(1);
+    sharpnessOutCount = 1;
+    sharpnessOut.resize(1);
+    valenceOutCount = 1;
+    valenceOut.resize(1);
+
+    UINT posInSize = posInCount * sizeof(XMFLOAT3);
+    UINT indexInSize = indexInCount * sizeof(unsigned char);
+    UINT sharpnessInSize = sharpnessInCount * sizeof(unsigned char);
+    UINT valenceInSize = valenceInCount * sizeof(int);
+    UINT totalSize = (posInSize + indexInSize + sharpnessInSize + valenceInSize + 255) & ~255;
+    UINT paddingSize = totalSize - (posInSize + indexInSize + sharpnessInSize + valenceInSize);
 
     D3D12_HEAP_PROPERTIES defaultHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
     D3D12_HEAP_PROPERTIES uploadHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-    D3D12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(posInSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-    D3D12_RESOURCE_DESC uploadBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(posInSize);
 
+    //D3D12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(totalSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    D3D12_RESOURCE_DESC uploadBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(totalSize); 
+    D3D12_RESOURCE_DESC posInBufferDesc = CD3DX12_RESOURCE_DESC::Buffer((posInSize + 255) & ~255);
+    D3D12_RESOURCE_DESC indexInBufferDesc = CD3DX12_RESOURCE_DESC::Buffer((indexInSize + 255) & ~255);
+    D3D12_RESOURCE_DESC sharpnessInBufferDesc = CD3DX12_RESOURCE_DESC::Buffer((sharpnessInSize + 255) & ~255);
+    D3D12_RESOURCE_DESC valenceInBufferDesc = CD3DX12_RESOURCE_DESC::Buffer((valenceInSize + 255) & ~255);
 
-    ThrowIfFailed(m_device->CreateCommittedResource(
-        &defaultHeapProperties,
-        D3D12_HEAP_FLAG_NONE,
-        &bufferDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
-        nullptr,
-        IID_PPV_ARGS(&m_positionBufferIn)));
+    // CreateCommittedResource
+    {
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &uploadHeapProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &uploadBufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&m_uploadHeap)));
+        NAME_D3D12_OBJECT(m_uploadHeap);
 
-    ThrowIfFailed(m_device->CreateCommittedResource(
-        &uploadHeapProperties,
-        D3D12_HEAP_FLAG_NONE,
-        &uploadBufferDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(&m_positionBufferInUpload)));
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &defaultHeapProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &posInBufferDesc,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr,
+            IID_PPV_ARGS(&m_positionBufferIn)
+        ));
+        NAME_D3D12_OBJECT(m_positionBufferIn);
 
-    NAME_D3D12_OBJECT(m_positionBufferIn);
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &defaultHeapProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &indexInBufferDesc,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr,
+            IID_PPV_ARGS(&m_indexBufferIn)
+        ));
+        NAME_D3D12_OBJECT(m_indexBufferIn);
 
-    D3D12_SUBRESOURCE_DATA posInData = {};
-    posInData.pData = reinterpret_cast<UINT8*>(&posIn[0]);
-    posInData.RowPitch = posInSize;
-    posInData.SlicePitch = posInData.RowPitch;
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &defaultHeapProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &sharpnessInBufferDesc,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr,
+            IID_PPV_ARGS(&m_friendAndSharpnessBufferIn)
+        ));
+        NAME_D3D12_OBJECT(m_friendAndSharpnessBufferIn);
 
-    UpdateSubresources<1>(m_computeCommandList.Get(), m_positionBufferIn.Get(), m_positionBufferInUpload.Get(), 0, 0, 1, &posInData);
-        
-    D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(m_positionBufferIn.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    m_computeCommandList->ResourceBarrier(1, &barrier);
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc.Format = DXGI_FORMAT_UNKNOWN;
-    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-    srvDesc.Buffer.FirstElement = 0;
-    srvDesc.Buffer.NumElements = posInCount;
-    srvDesc.Buffer.StructureByteStride = sizeof(XMFLOAT3);
-    srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandlePosIn(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), SrvPosIn, m_srvUavDescriptorSize);
-    m_device->CreateShaderResourceView(m_positionBufferIn.Get(), &srvDesc, srvHandlePosIn);
-
-    D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-    uavDesc.Format = DXGI_FORMAT_UNKNOWN;
-    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-    uavDesc.Buffer.FirstElement = 0;
-    uavDesc.Buffer.NumElements = posInCount;
-    // maybe posOut?
-    uavDesc.Buffer.StructureByteStride = sizeof(XMFLOAT3);
-    uavDesc.Buffer.CounterOffsetInBytes = 0;
-    uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE uavHandlePosOut(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), UavPosOut, m_srvUavDescriptorSize);
-    m_device->CreateUnorderedAccessView(m_positionBufferOut.Get(), nullptr, &uavDesc, uavHandlePosOut);
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &defaultHeapProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &valenceInBufferDesc,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr,
+            IID_PPV_ARGS(&m_valenceStartInfoBufferIn)
+        ));
+        NAME_D3D12_OBJECT(m_valenceStartInfoBufferIn);
+    }
     
+
+    UINT8* pUploadHeapData;
+    ThrowIfFailed(m_uploadHeap->Map(0, nullptr, reinterpret_cast<void**>(&pUploadHeapData)));
+
+    memcpy(pUploadHeapData, &posIn[0], posInSize);
+    UINT indexInOffset = posInSize;
+    memcpy(pUploadHeapData + indexInOffset, &indexIn[0], indexInSize);
+    UINT sharpnessInOffset = indexInOffset + indexInSize;
+    memcpy(pUploadHeapData + sharpnessInOffset, &sharpnessIn[0], sharpnessInSize);
+    UINT valenceInOffset = sharpnessInOffset + sharpnessInSize;
+    memcpy(pUploadHeapData + valenceInOffset, &valenceIn[0], valenceInSize);
+
+    m_uploadHeap->Unmap(0, nullptr);
+
+    // 拷贝到实际的 gpu 资源
+    {
+
+        m_computeCommandList->CopyBufferRegion(m_positionBufferIn.Get(), 0, m_uploadHeap.Get(), 0, posInSize);
+        m_computeCommandList->CopyBufferRegion(m_indexBufferIn.Get(), 0, m_uploadHeap.Get(), indexInOffset, indexInSize);
+        m_computeCommandList->CopyBufferRegion(m_friendAndSharpnessBufferIn.Get(), 0, m_uploadHeap.Get(), sharpnessInOffset, sharpnessInSize);
+        m_computeCommandList->CopyBufferRegion(m_valenceStartInfoBufferIn.Get(), 0, m_uploadHeap.Get(), valenceInOffset, valenceInSize);
+
+        CD3DX12_RESOURCE_BARRIER barriers[] = {
+            CD3DX12_RESOURCE_BARRIER::Transition(
+                m_positionBufferIn.Get(),
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER
+            ),
+            CD3DX12_RESOURCE_BARRIER::Transition(
+                m_indexBufferIn.Get(),
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_INDEX_BUFFER
+            ),
+            CD3DX12_RESOURCE_BARRIER::Transition(
+                m_friendAndSharpnessBufferIn.Get(),
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_INDEX_BUFFER
+            ),
+            CD3DX12_RESOURCE_BARRIER::Transition(
+                m_valenceStartInfoBufferIn.Get(),
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_INDEX_BUFFER
+            ),
+        };
+
+        m_computeCommandList->ResourceBarrier(_countof(barriers), barriers);
+    }
+
+    // create views
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc_posIn = {};
+        srvDesc_posIn.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc_posIn.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc_posIn.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srvDesc_posIn.Buffer.FirstElement = 0;
+        srvDesc_posIn.Buffer.NumElements = posInCount;
+        srvDesc_posIn.Buffer.StructureByteStride = sizeof(XMFLOAT3);
+        srvDesc_posIn.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandlePosIn(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), SrvPosIn, m_srvUavDescriptorSize);
+        m_device->CreateShaderResourceView(m_positionBufferIn.Get(), &srvDesc_posIn, srvHandlePosIn);
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc_indexIn = {};
+        srvDesc_indexIn.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc_indexIn.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc_indexIn.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srvDesc_indexIn.Buffer.FirstElement = indexInOffset;
+        srvDesc_indexIn.Buffer.NumElements = indexInCount;
+        srvDesc_indexIn.Buffer.StructureByteStride = sizeof(unsigned char);
+        srvDesc_indexIn.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleIndexIn(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), SrvIndexIn, m_srvUavDescriptorSize);
+        m_device->CreateShaderResourceView(m_indexBufferIn.Get(), &srvDesc_indexIn, srvHandleIndexIn);
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc_sharpnessIn = {};
+        srvDesc_sharpnessIn.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc_sharpnessIn.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc_sharpnessIn.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srvDesc_sharpnessIn.Buffer.FirstElement = sharpnessInOffset;
+        srvDesc_sharpnessIn.Buffer.NumElements = sharpnessInCount;
+        srvDesc_sharpnessIn.Buffer.StructureByteStride = sizeof(unsigned char);
+        srvDesc_sharpnessIn.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleSharpnessIn(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), SrvFriendIn, m_srvUavDescriptorSize);
+        m_device->CreateShaderResourceView(m_friendAndSharpnessBufferIn.Get(), &srvDesc_sharpnessIn, srvHandleSharpnessIn);
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc_valenceIn = {};
+        srvDesc_valenceIn.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc_valenceIn.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc_valenceIn.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srvDesc_valenceIn.Buffer.FirstElement = valenceInOffset;
+        srvDesc_valenceIn.Buffer.NumElements = valenceInCount;
+        srvDesc_valenceIn.Buffer.StructureByteStride = sizeof(int);
+        srvDesc_valenceIn.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleValenceIn(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), SrvValenceIn, m_srvUavDescriptorSize);
+        m_device->CreateShaderResourceView(m_valenceStartInfoBufferIn.Get(), &srvDesc_valenceIn, srvHandleValenceIn);
+
+        UINT posOutSize = posOutCount * sizeof(XMFLOAT3);
+        UINT indexOutSize = indexOutCount * sizeof(unsigned char);
+        UINT sharpnessOutSize = sharpnessOutCount * sizeof(unsigned char);
+        UINT valenceOutSize = valenceOutCount * sizeof(int);
+
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc_posOut = {};
+        uavDesc_posOut.Format = DXGI_FORMAT_UNKNOWN;
+        uavDesc_posOut.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uavDesc_posOut.Buffer.FirstElement = 0;
+        uavDesc_posOut.Buffer.NumElements = posOutCount;
+        uavDesc_posOut.Buffer.StructureByteStride = sizeof(XMFLOAT3);
+        uavDesc_posOut.Buffer.CounterOffsetInBytes = 0;
+        uavDesc_posOut.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+        CD3DX12_CPU_DESCRIPTOR_HANDLE uavHandlePosOut(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), UavPosOut, m_srvUavDescriptorSize);
+        m_device->CreateUnorderedAccessView(m_positionBufferOut.Get(), nullptr, &uavDesc_posOut, uavHandlePosOut);
+
+        UINT indexOutOffset = posOutSize;
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc_indexOut = {};
+        uavDesc_indexOut.Format = DXGI_FORMAT_UNKNOWN;
+        uavDesc_indexOut.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uavDesc_indexOut.Buffer.FirstElement = indexOutOffset;
+        uavDesc_indexOut.Buffer.NumElements = indexOutCount;
+        uavDesc_indexOut.Buffer.StructureByteStride = sizeof(unsigned char);
+        uavDesc_indexOut.Buffer.CounterOffsetInBytes = 0;
+        uavDesc_indexOut.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+        CD3DX12_CPU_DESCRIPTOR_HANDLE uavHandleIndexOut(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), UavIndexOut, m_srvUavDescriptorSize);
+        m_device->CreateUnorderedAccessView(m_indexBufferOut.Get(), nullptr, &uavDesc_indexOut, uavHandleIndexOut);
+
+        UINT sharpnessOutOffset = indexOutOffset + indexOutSize;
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc_sharpnessOut = {};
+        uavDesc_sharpnessOut.Format = DXGI_FORMAT_UNKNOWN;
+        uavDesc_sharpnessOut.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uavDesc_sharpnessOut.Buffer.FirstElement = sharpnessOutOffset;
+        uavDesc_sharpnessOut.Buffer.NumElements = sharpnessOutCount;
+        uavDesc_sharpnessOut.Buffer.StructureByteStride = sizeof(unsigned char);
+        uavDesc_sharpnessOut.Buffer.CounterOffsetInBytes = 0;
+        uavDesc_sharpnessOut.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+        CD3DX12_CPU_DESCRIPTOR_HANDLE uavHandleSharpnessOut(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), UavFriendOut, m_srvUavDescriptorSize);
+        m_device->CreateUnorderedAccessView(m_friendAndSharpnessBufferOut.Get(), nullptr, &uavDesc_sharpnessOut, uavHandleSharpnessOut);
+
+        UINT valenceOutOffset = sharpnessOutOffset + sharpnessOutSize;
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc_valenceOut = {};
+        uavDesc_valenceOut.Format = DXGI_FORMAT_UNKNOWN;
+        uavDesc_valenceOut.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uavDesc_valenceOut.Buffer.FirstElement = valenceOutOffset;
+        uavDesc_valenceOut.Buffer.NumElements = valenceOutCount;
+        uavDesc_valenceOut.Buffer.StructureByteStride = sizeof(int);
+        uavDesc_valenceOut.Buffer.CounterOffsetInBytes = 0;
+        uavDesc_valenceOut.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+        CD3DX12_CPU_DESCRIPTOR_HANDLE uavHandleValenceOut(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), UavValenceOut, m_srvUavDescriptorSize);
+        m_device->CreateUnorderedAccessView(m_valenceStartInfoBufferOut.Get(), nullptr, &uavDesc_valenceOut, uavHandleValenceOut);
+
+    }
 
 }

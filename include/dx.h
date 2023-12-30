@@ -37,7 +37,30 @@ public:
     void Dispatch(int faceCount, int vertexCount, float sharpness);
 
 private:
-    static const UINT posInCount = 100;
+    UINT posInCount;
+    std::vector<XMFLOAT3> posIn;
+
+    UINT indexInCount;
+    std::vector<unsigned char> indexIn;
+
+    UINT sharpnessInCount;
+    std::vector<unsigned char> sharpnessIn;
+
+    UINT valenceInCount;
+    std::vector<int> valenceIn;
+
+    UINT posOutCount;
+    std::vector<XMFLOAT3> posOut;
+
+    UINT indexOutCount;
+    std::vector<unsigned char> indexOut;
+
+    UINT sharpnessOutCount;
+    std::vector<unsigned char> sharpnessOut;
+
+    UINT valenceOutCount;
+    std::vector<int> valenceOut;
+
 
     enum ComputeRootParameters : UINT32
     {
@@ -71,8 +94,11 @@ private:
     // Resources
     ComPtr<ID3D12Resource> m_constantBufferCS;
 
+    ComPtr<ID3D12Resource> m_uploadHeap;
+
     ComPtr<ID3D12Resource> m_positionBufferIn;
-    ComPtr<ID3D12Resource> m_positionBufferInUpload;
+    //ComPtr<ID3D12Resource> m_positionBufferInUpload;
+    
 
     ComPtr<ID3D12Resource> m_indexBufferIn;
     ComPtr<ID3D12Resource> m_friendAndSharpnessBufferIn;
@@ -94,6 +120,8 @@ private:
 
     ComPtr<ID3D12Fence> m_threadFences;
     volatile HANDLE m_threadFenceEvents;
+
+    
 
     // Methods to create and initialize the resources
     void LoadPipeline();
