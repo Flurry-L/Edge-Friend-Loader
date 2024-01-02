@@ -32,15 +32,18 @@ public:
     };
 
     void OnInit();
-    
 
-    void Dispatch(int faceCount, int vertexCount, float sharpness);
+    void SetIters(int i);
 
 private:
+    int iters;
+
     std::filesystem::path file = "C:/Users/17480/Desktop/test/spot_quadrangulated.obj";
 
     Edgefriend::EdgefriendGeometry orig_geometry;
     Edgefriend::EdgefriendGeometry new_geometry;
+
+    Edgefriend::EdgefriendGeometry result;
 
     struct oldSize {
         int F;
@@ -88,6 +91,7 @@ private:
 
     ComPtr<ID3D12Resource> m_uploadHeap;
     ComPtr<ID3D12Resource> m_readbackHeap;
+    ComPtr<ID3D12Resource> constantBufferCSUpload;
 
     ComPtr<ID3D12Resource> m_positionBufferIn;
     ComPtr<ID3D12Resource> m_indexBufferIn;
@@ -117,8 +121,20 @@ private:
 
 
     void CreateBuffers();
+    void CreateSrvUavViews();
+    void SetBuffers();
+
+    void CreateHeapAndViews();
+
     void WaitForRenderContext();
     void ReadBack();
+
+    void ComputeMemory(int iter, Edgefriend::EdgefriendGeometry orig);
+
+    static int align_256(int size) {
+        return (size + 255) & ~255;
+    }
+
 
     void LoadObj();
     void WriteObj();
