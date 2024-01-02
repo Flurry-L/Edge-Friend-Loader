@@ -75,11 +75,13 @@ void EdgefriendDX12::LoadPipeline() {
     // Enable the debug layer (requires the Graphics Tools "optional feature").
     // NOTE: Enabling the debug layer after device creation will invalidate the active device.
     {
-        ComPtr<ID3D12Debug> debugController;
+        ComPtr<ID3D12Debug6> debugController;
         if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController))))
         {
             debugController->EnableDebugLayer();
-
+            debugController->SetEnableGPUBasedValidation(true);
+            debugController->SetEnableSynchronizedCommandQueueValidation(true);
+            debugController->SetEnableAutoName(true);
             // Enable additional debug layers.
             dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
         }
@@ -171,13 +173,13 @@ void EdgefriendDX12::LoadAssets() {
     // Create the root signature
     {
         CD3DX12_DESCRIPTOR_RANGE1 ranges[2];
-        ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE);
-        ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 4, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE);
+        ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 4, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_NONE);
+        ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_NONE);   
 
         CD3DX12_ROOT_PARAMETER1 rootParameters[ComputeRootParametersCount];
         rootParameters[ComputeRootCBV].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL);
-        rootParameters[ComputeRootSRVTable].InitAsDescriptorTable(1, &ranges[0], D3D12_SHADER_VISIBILITY_ALL);
-        rootParameters[ComputeRootUAVTable].InitAsDescriptorTable(1, &ranges[1], D3D12_SHADER_VISIBILITY_ALL);
+        rootParameters[ComputeRootSRVTable].InitAsDescriptorTable(1, &ranges[1], D3D12_SHADER_VISIBILITY_ALL);
+        rootParameters[ComputeRootUAVTable].InitAsDescriptorTable(1, &ranges[0], D3D12_SHADER_VISIBILITY_ALL);
 
         CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC computeRootSignatureDesc;
         computeRootSignatureDesc.Init_1_1(_countof(rootParameters), rootParameters, 0, nullptr);
@@ -211,7 +213,7 @@ void EdgefriendDX12::LoadAssets() {
         ComPtr<ID3DBlob> computeShader;
         ThrowIfFailed(D3DCompile(shaderCode.data(), shaderCode.size(),
             nullptr, nullptr, nullptr,
-            "CSEdgefriend", "cs_5_0", 0, 0, &computeShader, nullptr));
+            "CSEdgefriend", "cs_5_1", 0, 0, &computeShader, nullptr));
         //std::cout << shaderCode;
 
         D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
@@ -222,17 +224,10 @@ void EdgefriendDX12::LoadAssets() {
         NAME_D3D12_OBJECT(m_pipelineState);
     }
 
-    // Create the command list.
-    ThrowIfFailed(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocator.Get(), m_pipelineState.Get(), IID_PPV_ARGS(&m_computeCommandList)));
-    m_computeCommandList->SetComputeRootSignature(m_rootSignature.Get());
-    NAME_D3D12_OBJECT(m_computeCommandList);
-
-    CreateBuffers();
-
     ComPtr<ID3D12Resource> constantBufferCSUpload;
-
-    // Create the compute shader's constant buffer.
+    D3D12_SUBRESOURCE_DATA computeCBData = {};
     {
+        
         const UINT constantBufferSize = (sizeof(ConstantBufferCS) + 255) & ~255; // Align to 256 bytes
 
         CD3DX12_HEAP_PROPERTIES constantBufferHeapProps(D3D12_HEAP_TYPE_DEFAULT);
@@ -265,20 +260,36 @@ void EdgefriendDX12::LoadAssets() {
         constantBufferCS.V = orig_geometry.positions.size();
         constantBufferCS.sharpnessFactor = 1;
 
-        D3D12_SUBRESOURCE_DATA computeCBData = {};
+        
         computeCBData.pData = reinterpret_cast<UINT8*>(&constantBufferCS);
         computeCBData.RowPitch = constantBufferSize;
         computeCBData.SlicePitch = computeCBData.RowPitch;
+    }
+
+    // Create the command list.
+    ThrowIfFailed(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocator.Get(), m_pipelineState.Get(), IID_PPV_ARGS(&m_computeCommandList)));
+    m_computeCommandList->SetComputeRootSignature(m_rootSignature.Get());
+
+    ID3D12DescriptorHeap* ppHeaps[] = { m_srvUavHeap.Get() };
+    m_computeCommandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
+
+    CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(m_srvUavHeap->GetGPUDescriptorHandleForHeapStart(), SrvPosIn, m_srvUavDescriptorSize);
+    CD3DX12_GPU_DESCRIPTOR_HANDLE uavHandle(m_srvUavHeap->GetGPUDescriptorHandleForHeapStart(), UavPosOut, m_srvUavDescriptorSize);
+
+    m_computeCommandList->SetComputeRootConstantBufferView(ComputeRootCBV, m_constantBufferCS->GetGPUVirtualAddress());
+    m_computeCommandList->SetComputeRootDescriptorTable(ComputeRootSRVTable, srvHandle);
+    m_computeCommandList->SetComputeRootDescriptorTable(ComputeRootUAVTable, uavHandle);
+    NAME_D3D12_OBJECT(m_computeCommandList);
+
+    CreateBuffers();
+
+    
+
+    // Create the compute shader's constant buffer.
+    {
+        
 
         UpdateSubresources<1>(m_computeCommandList.Get(), m_constantBufferCS.Get(), constantBufferCSUpload.Get(), 0, 0, 1, &computeCBData);
-        //// Define the transition barrier
-        //D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-        //    m_constantBufferCS.Get(),
-        //    D3D12_RESOURCE_STATE_COPY_DEST,
-        //    D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
-
-        //// Invoke the command list's ResourceBarrier function
-        //m_computeCommandList->ResourceBarrier(1, &barrier);
     }
 
     m_computeCommandList->Dispatch(orig_geometry.positions.size(), 1, 1);
@@ -405,36 +416,10 @@ void EdgefriendDX12::CreateBuffers() {
 
     // 拷贝到实际的 gpu 资源
     {
-
         m_computeCommandList->CopyBufferRegion(m_positionBufferIn.Get(), 0, m_uploadHeap.Get(), 0, posInSize);
         m_computeCommandList->CopyBufferRegion(m_indexBufferIn.Get(), 0, m_uploadHeap.Get(), indexInOffset, indexInSize);
         m_computeCommandList->CopyBufferRegion(m_friendAndSharpnessBufferIn.Get(), 0, m_uploadHeap.Get(), sharpnessInOffset, sharpnessInSize);
         m_computeCommandList->CopyBufferRegion(m_valenceStartInfoBufferIn.Get(), 0, m_uploadHeap.Get(), valenceInOffset, valenceInSize);
-
-        /*CD3DX12_RESOURCE_BARRIER barriers[] = {
-            CD3DX12_RESOURCE_BARRIER::Transition(
-                m_positionBufferIn.Get(),
-                D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_GENERIC_READ
-            ),
-            CD3DX12_RESOURCE_BARRIER::Transition(
-                m_indexBufferIn.Get(),
-                D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_GENERIC_READ
-            ),
-            CD3DX12_RESOURCE_BARRIER::Transition(
-                m_friendAndSharpnessBufferIn.Get(),
-                D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_GENERIC_READ
-            ),
-            CD3DX12_RESOURCE_BARRIER::Transition(
-                m_valenceStartInfoBufferIn.Get(),
-                D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_GENERIC_READ
-            ),
-        };
-
-        m_computeCommandList->ResourceBarrier(_countof(barriers), barriers);*/
     }
 
     // create views
@@ -622,42 +607,10 @@ void EdgefriendDX12::ReadBack() {
 
     // 拷贝资源到 readbackHeap
     {
-        /*CD3DX12_RESOURCE_BARRIER barriers[] = {
-            CD3DX12_RESOURCE_BARRIER::Transition(
-                m_positionBufferOut.Get(),
-                D3D12_RESOURCE_STATE_COMMON,
-                D3D12_RESOURCE_STATE_COPY_SOURCE
-            ),
-            CD3DX12_RESOURCE_BARRIER::Transition(
-                m_indexBufferOut.Get(),
-                D3D12_RESOURCE_STATE_COMMON,
-                D3D12_RESOURCE_STATE_COPY_SOURCE
-            ),
-            CD3DX12_RESOURCE_BARRIER::Transition(
-                m_friendAndSharpnessBufferOut.Get(),
-                D3D12_RESOURCE_STATE_COMMON,
-                D3D12_RESOURCE_STATE_COPY_SOURCE
-            ),
-            CD3DX12_RESOURCE_BARRIER::Transition(
-                m_valenceStartInfoBufferOut.Get(),
-                D3D12_RESOURCE_STATE_COMMON,
-                D3D12_RESOURCE_STATE_COPY_SOURCE
-            ),
-            CD3DX12_RESOURCE_BARRIER::Transition(
-                m_readbackHeap.Get(),
-                D3D12_RESOURCE_STATE_COMMON,
-                D3D12_RESOURCE_STATE_COPY_DEST
-            ),
-        };
-
-        m_computeCommandList->ResourceBarrier(_countof(barriers), barriers);*/
-
-
         m_computeCommandList->CopyBufferRegion(m_readbackHeap.Get(), 0, m_positionBufferOut.Get(), 0, posSize);
         m_computeCommandList->CopyBufferRegion(m_readbackHeap.Get(), indexOffset, m_indexBufferOut.Get(), 0, indexSize);
         m_computeCommandList->CopyBufferRegion(m_readbackHeap.Get(), sharpnessOffset, m_friendAndSharpnessBufferOut.Get(), 0, sharpnessSize);
         m_computeCommandList->CopyBufferRegion(m_readbackHeap.Get(), valenceOffset, m_valenceStartInfoBufferOut.Get(), 0, valenceSize);
-
     }
 
     ThrowIfFailed(m_computeCommandList->Close());

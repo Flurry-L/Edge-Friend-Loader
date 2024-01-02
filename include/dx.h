@@ -57,8 +57,8 @@ private:
     enum ComputeRootParameters : UINT32
     {
         ComputeRootCBV = 0,
-        ComputeRootSRVTable,
         ComputeRootUAVTable,
+        ComputeRootSRVTable,
         ComputeRootParametersCount
     };
 
