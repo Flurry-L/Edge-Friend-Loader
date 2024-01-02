@@ -61,9 +61,11 @@ void EdgefriendDX12::PreProcess(std::vector<glm::vec3> oldPositions,
 }
 
 void EdgefriendDX12::OnInit() {
-    // LoadObj();
+    LoadObj();
     LoadPipeline();
     LoadAssets();
+    ReadBack();
+    WriteObj();
 }
 
 
@@ -222,6 +224,7 @@ void EdgefriendDX12::LoadAssets() {
 
     // Create the command list.
     ThrowIfFailed(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocator.Get(), m_pipelineState.Get(), IID_PPV_ARGS(&m_computeCommandList)));
+    m_computeCommandList->SetComputeRootSignature(m_rootSignature.Get());
     NAME_D3D12_OBJECT(m_computeCommandList);
 
     CreateBuffers();
@@ -239,7 +242,7 @@ void EdgefriendDX12::LoadAssets() {
             &constantBufferHeapProps,
             D3D12_HEAP_FLAG_NONE,
             &constantBufferDesc,
-            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_COMMON,
             nullptr,
             IID_PPV_ARGS(&m_constantBufferCS)));
 
@@ -250,7 +253,7 @@ void EdgefriendDX12::LoadAssets() {
             &heapPropsUpload,
             D3D12_HEAP_FLAG_NONE,
             &resourceDescUpload,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
+            D3D12_RESOURCE_STATE_COMMON,
             nullptr,
             IID_PPV_ARGS(&constantBufferCSUpload)));
 
@@ -258,8 +261,9 @@ void EdgefriendDX12::LoadAssets() {
         NAME_D3D12_OBJECT(constantBufferCSUpload);
 
         ConstantBufferCS constantBufferCS = {};
-        constantBufferCS.F = 1;
-        constantBufferCS.V = 1;
+        constantBufferCS.F = orig_geometry.friendsAndSharpnesses.size();
+        constantBufferCS.V = orig_geometry.positions.size();
+        constantBufferCS.sharpnessFactor = 1;
 
         D3D12_SUBRESOURCE_DATA computeCBData = {};
         computeCBData.pData = reinterpret_cast<UINT8*>(&constantBufferCS);
@@ -267,15 +271,17 @@ void EdgefriendDX12::LoadAssets() {
         computeCBData.SlicePitch = computeCBData.RowPitch;
 
         UpdateSubresources<1>(m_computeCommandList.Get(), m_constantBufferCS.Get(), constantBufferCSUpload.Get(), 0, 0, 1, &computeCBData);
-        // Define the transition barrier
-        D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-            m_constantBufferCS.Get(),
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+        //// Define the transition barrier
+        //D3D12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+        //    m_constantBufferCS.Get(),
+        //    D3D12_RESOURCE_STATE_COPY_DEST,
+        //    D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
 
-        // Invoke the command list's ResourceBarrier function
-        m_computeCommandList->ResourceBarrier(1, &barrier);
+        //// Invoke the command list's ResourceBarrier function
+        //m_computeCommandList->ResourceBarrier(1, &barrier);
     }
+
+    m_computeCommandList->Dispatch(orig_geometry.positions.size(), 1, 1);
 
     // Close the command list and execute it to begin the initial GPU setup.
     ThrowIfFailed(m_computeCommandList->Close());
@@ -309,31 +315,17 @@ void EdgefriendDX12::WaitForRenderContext() {
     WaitForSingleObject(m_renderContextFenceEvent, INFINITE);
 }
 
+
+
 void EdgefriendDX12::CreateBuffers() {
-    posInCount = 1;
-    posIn.resize(1);
-    indexInCount = 1;
-    indexIn.resize(1);
-    sharpnessInCount = 1;
-    sharpnessIn.resize(1);
-    valenceInCount = 1;
-    valenceIn.resize(1);
 
-    posOutCount = 1;
-    posOut.resize(1);
-    indexOutCount = 1;
-    indexOut.resize(1);
-    sharpnessOutCount = 1;
-    sharpnessOut.resize(1);
-    valenceOutCount = 1;
-    valenceOut.resize(1);
+    UINT posInSize = orig_geometry.positions.size() * sizeof(glm::vec3);
+    UINT indexInSize = orig_geometry.indices.size() * sizeof(int);
+    UINT sharpnessInSize = orig_geometry.friendsAndSharpnesses.size() * sizeof(glm::uvec4);
+    UINT valenceInSize = orig_geometry.valenceStartInfos.size() * sizeof(int);
 
-    UINT posInSize = posInCount * sizeof(XMFLOAT3);
-    UINT indexInSize = indexInCount * sizeof(unsigned char);
-    UINT sharpnessInSize = sharpnessInCount * sizeof(unsigned char);
-    UINT valenceInSize = valenceInCount * sizeof(int);
     UINT totalSize = (posInSize + indexInSize + sharpnessInSize + valenceInSize + 255) & ~255;
-    UINT paddingSize = totalSize - (posInSize + indexInSize + sharpnessInSize + valenceInSize);
+
 
     D3D12_HEAP_PROPERTIES defaultHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
     D3D12_HEAP_PROPERTIES uploadHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
@@ -351,7 +343,7 @@ void EdgefriendDX12::CreateBuffers() {
             &uploadHeapProperties,
             D3D12_HEAP_FLAG_NONE,
             &uploadBufferDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
+            D3D12_RESOURCE_STATE_COMMON,
             nullptr,
             IID_PPV_ARGS(&m_uploadHeap)));
         NAME_D3D12_OBJECT(m_uploadHeap);
@@ -360,7 +352,7 @@ void EdgefriendDX12::CreateBuffers() {
             &defaultHeapProperties,
             D3D12_HEAP_FLAG_NONE,
             &posInBufferDesc,
-            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_COMMON,
             nullptr,
             IID_PPV_ARGS(&m_positionBufferIn)
         ));
@@ -370,7 +362,7 @@ void EdgefriendDX12::CreateBuffers() {
             &defaultHeapProperties,
             D3D12_HEAP_FLAG_NONE,
             &indexInBufferDesc,
-            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_COMMON,
             nullptr,
             IID_PPV_ARGS(&m_indexBufferIn)
         ));
@@ -380,7 +372,7 @@ void EdgefriendDX12::CreateBuffers() {
             &defaultHeapProperties,
             D3D12_HEAP_FLAG_NONE,
             &sharpnessInBufferDesc,
-            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_COMMON,
             nullptr,
             IID_PPV_ARGS(&m_friendAndSharpnessBufferIn)
         ));
@@ -390,7 +382,7 @@ void EdgefriendDX12::CreateBuffers() {
             &defaultHeapProperties,
             D3D12_HEAP_FLAG_NONE,
             &valenceInBufferDesc,
-            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_COMMON,
             nullptr,
             IID_PPV_ARGS(&m_valenceStartInfoBufferIn)
         ));
@@ -401,13 +393,13 @@ void EdgefriendDX12::CreateBuffers() {
     UINT8* pUploadHeapData;
     ThrowIfFailed(m_uploadHeap->Map(0, nullptr, reinterpret_cast<void**>(&pUploadHeapData)));
 
-    memcpy(pUploadHeapData, &posIn[0], posInSize);
+    memcpy(pUploadHeapData, orig_geometry.positions.data(), posInSize);
     UINT indexInOffset = posInSize;
-    memcpy(pUploadHeapData + indexInOffset, &indexIn[0], indexInSize);
+    memcpy(pUploadHeapData + indexInOffset, orig_geometry.indices.data(), indexInSize);
     UINT sharpnessInOffset = indexInOffset + indexInSize;
-    memcpy(pUploadHeapData + sharpnessInOffset, &sharpnessIn[0], sharpnessInSize);
+    memcpy(pUploadHeapData + sharpnessInOffset, orig_geometry.friendsAndSharpnesses.data(), sharpnessInSize);
     UINT valenceInOffset = sharpnessInOffset + sharpnessInSize;
-    memcpy(pUploadHeapData + valenceInOffset, &valenceIn[0], valenceInSize);
+    memcpy(pUploadHeapData + valenceInOffset, orig_geometry.valenceStartInfos.data(), valenceInSize);
 
     m_uploadHeap->Unmap(0, nullptr);
 
@@ -419,30 +411,30 @@ void EdgefriendDX12::CreateBuffers() {
         m_computeCommandList->CopyBufferRegion(m_friendAndSharpnessBufferIn.Get(), 0, m_uploadHeap.Get(), sharpnessInOffset, sharpnessInSize);
         m_computeCommandList->CopyBufferRegion(m_valenceStartInfoBufferIn.Get(), 0, m_uploadHeap.Get(), valenceInOffset, valenceInSize);
 
-        CD3DX12_RESOURCE_BARRIER barriers[] = {
+        /*CD3DX12_RESOURCE_BARRIER barriers[] = {
             CD3DX12_RESOURCE_BARRIER::Transition(
                 m_positionBufferIn.Get(),
                 D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER
+                D3D12_RESOURCE_STATE_GENERIC_READ
             ),
             CD3DX12_RESOURCE_BARRIER::Transition(
                 m_indexBufferIn.Get(),
                 D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_INDEX_BUFFER
+                D3D12_RESOURCE_STATE_GENERIC_READ
             ),
             CD3DX12_RESOURCE_BARRIER::Transition(
                 m_friendAndSharpnessBufferIn.Get(),
                 D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_INDEX_BUFFER
+                D3D12_RESOURCE_STATE_GENERIC_READ
             ),
             CD3DX12_RESOURCE_BARRIER::Transition(
                 m_valenceStartInfoBufferIn.Get(),
                 D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_INDEX_BUFFER
+                D3D12_RESOURCE_STATE_GENERIC_READ
             ),
         };
 
-        m_computeCommandList->ResourceBarrier(_countof(barriers), barriers);
+        m_computeCommandList->ResourceBarrier(_countof(barriers), barriers);*/
     }
 
     // create views
@@ -452,31 +444,31 @@ void EdgefriendDX12::CreateBuffers() {
         srvDesc_posIn.Format = DXGI_FORMAT_UNKNOWN;
         srvDesc_posIn.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
         srvDesc_posIn.Buffer.FirstElement = 0;
-        srvDesc_posIn.Buffer.NumElements = posInCount;
-        srvDesc_posIn.Buffer.StructureByteStride = sizeof(XMFLOAT3);
+        srvDesc_posIn.Buffer.NumElements = orig_geometry.positions.size();
+        srvDesc_posIn.Buffer.StructureByteStride = sizeof(glm::vec3);
         srvDesc_posIn.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
         CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandlePosIn(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), SrvPosIn, m_srvUavDescriptorSize);
         m_device->CreateShaderResourceView(m_positionBufferIn.Get(), &srvDesc_posIn, srvHandlePosIn);
 
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc_indexIn = {};
         srvDesc_indexIn.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc_indexIn.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc_indexIn.Format = DXGI_FORMAT_R32_TYPELESS;
         srvDesc_indexIn.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        srvDesc_indexIn.Buffer.FirstElement = indexInOffset;
-        srvDesc_indexIn.Buffer.NumElements = indexInCount;
-        srvDesc_indexIn.Buffer.StructureByteStride = sizeof(unsigned char);
-        srvDesc_indexIn.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        srvDesc_indexIn.Buffer.FirstElement = 0;
+        srvDesc_indexIn.Buffer.NumElements = orig_geometry.indices.size();
+        srvDesc_indexIn.Buffer.StructureByteStride = 0;
+        srvDesc_indexIn.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
         CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleIndexIn(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), SrvIndexIn, m_srvUavDescriptorSize);
         m_device->CreateShaderResourceView(m_indexBufferIn.Get(), &srvDesc_indexIn, srvHandleIndexIn);
 
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc_sharpnessIn = {};
         srvDesc_sharpnessIn.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc_sharpnessIn.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc_sharpnessIn.Format = DXGI_FORMAT_R32_TYPELESS;
         srvDesc_sharpnessIn.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        srvDesc_sharpnessIn.Buffer.FirstElement = sharpnessInOffset;
-        srvDesc_sharpnessIn.Buffer.NumElements = sharpnessInCount;
-        srvDesc_sharpnessIn.Buffer.StructureByteStride = sizeof(unsigned char);
-        srvDesc_sharpnessIn.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        srvDesc_sharpnessIn.Buffer.FirstElement = 0;
+        srvDesc_sharpnessIn.Buffer.NumElements = orig_geometry.friendsAndSharpnesses.size() * sizeof(glm::uvec4) / 4;
+        srvDesc_sharpnessIn.Buffer.StructureByteStride = 0;
+        srvDesc_sharpnessIn.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
         CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleSharpnessIn(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), SrvFriendIn, m_srvUavDescriptorSize);
         m_device->CreateShaderResourceView(m_friendAndSharpnessBufferIn.Get(), &srvDesc_sharpnessIn, srvHandleSharpnessIn);
 
@@ -484,24 +476,76 @@ void EdgefriendDX12::CreateBuffers() {
         srvDesc_valenceIn.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srvDesc_valenceIn.Format = DXGI_FORMAT_UNKNOWN;
         srvDesc_valenceIn.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        srvDesc_valenceIn.Buffer.FirstElement = valenceInOffset;
-        srvDesc_valenceIn.Buffer.NumElements = valenceInCount;
+        srvDesc_valenceIn.Buffer.FirstElement = 0;
+        srvDesc_valenceIn.Buffer.NumElements = orig_geometry.valenceStartInfos.size();
         srvDesc_valenceIn.Buffer.StructureByteStride = sizeof(int);
         srvDesc_valenceIn.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
         CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleValenceIn(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), SrvValenceIn, m_srvUavDescriptorSize);
         m_device->CreateShaderResourceView(m_valenceStartInfoBufferIn.Get(), &srvDesc_valenceIn, srvHandleValenceIn);
 
-        UINT posOutSize = posOutCount * sizeof(XMFLOAT3);
-        UINT indexOutSize = indexOutCount * sizeof(unsigned char);
-        UINT sharpnessOutSize = sharpnessOutCount * sizeof(unsigned char);
-        UINT valenceOutSize = valenceOutCount * sizeof(int);
+        int oV = orig_geometry.positions.size();
+        new_geometry.positions.resize(oV + 3 * orig_geometry.valenceStartInfos.size());
+        new_geometry.indices.resize(orig_geometry.indices.size() * 4);
+        new_geometry.friendsAndSharpnesses.resize(orig_geometry.indices.size());
+        new_geometry.valenceStartInfos.resize(new_geometry.positions.size());
+
+
+        UINT posOutSize = new_geometry.positions.size() * sizeof(glm::vec3);
+        UINT indexOutSize = new_geometry.indices.size() * sizeof(int);
+        UINT sharpnessOutSize = new_geometry.friendsAndSharpnesses.size() * sizeof(glm::uvec4);
+        UINT valenceOutSize = new_geometry.valenceStartInfos.size() * sizeof(int);
+
+        {
+            D3D12_HEAP_PROPERTIES defaultHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+            D3D12_RESOURCE_DESC posOutBufferDesc = CD3DX12_RESOURCE_DESC::Buffer((posOutSize + 255) & ~255);
+            posOutBufferDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+            D3D12_RESOURCE_DESC indexOutBufferDesc = CD3DX12_RESOURCE_DESC::Buffer((indexOutSize + 255) & ~255);
+            indexOutBufferDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+            D3D12_RESOURCE_DESC sharpnessOutBufferDesc = CD3DX12_RESOURCE_DESC::Buffer((sharpnessOutSize + 255) & ~255);
+            sharpnessOutBufferDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+            D3D12_RESOURCE_DESC valenceOutBufferDesc = CD3DX12_RESOURCE_DESC::Buffer((valenceOutSize + 255) & ~255);
+            valenceOutBufferDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+            ThrowIfFailed(m_device->CreateCommittedResource(
+                &defaultHeapProperties,
+                D3D12_HEAP_FLAG_NONE,
+                &posOutBufferDesc,
+                D3D12_RESOURCE_STATE_COMMON,
+                nullptr,
+                IID_PPV_ARGS(&m_positionBufferOut)));
+            NAME_D3D12_OBJECT(m_positionBufferOut);
+            ThrowIfFailed(m_device->CreateCommittedResource(
+                &defaultHeapProperties,
+                D3D12_HEAP_FLAG_NONE,
+                &indexOutBufferDesc,
+                D3D12_RESOURCE_STATE_COMMON,
+                nullptr,
+                IID_PPV_ARGS(&m_indexBufferOut)));
+            NAME_D3D12_OBJECT(m_indexBufferOut);
+            ThrowIfFailed(m_device->CreateCommittedResource(
+                &defaultHeapProperties,
+                D3D12_HEAP_FLAG_NONE,
+                &sharpnessOutBufferDesc,
+                D3D12_RESOURCE_STATE_COMMON,
+                nullptr,
+                IID_PPV_ARGS(&m_friendAndSharpnessBufferOut)));
+            NAME_D3D12_OBJECT(m_friendAndSharpnessBufferOut);
+            ThrowIfFailed(m_device->CreateCommittedResource(
+                &defaultHeapProperties,
+                D3D12_HEAP_FLAG_NONE,
+                &valenceOutBufferDesc,
+                D3D12_RESOURCE_STATE_COMMON,
+                nullptr,
+                IID_PPV_ARGS(&m_valenceStartInfoBufferOut)));
+            NAME_D3D12_OBJECT(m_valenceStartInfoBufferOut);
+        }
+
 
         D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc_posOut = {};
         uavDesc_posOut.Format = DXGI_FORMAT_UNKNOWN;
         uavDesc_posOut.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
         uavDesc_posOut.Buffer.FirstElement = 0;
-        uavDesc_posOut.Buffer.NumElements = posOutCount;
-        uavDesc_posOut.Buffer.StructureByteStride = sizeof(XMFLOAT3);
+        uavDesc_posOut.Buffer.NumElements = new_geometry.positions.size();
+        uavDesc_posOut.Buffer.StructureByteStride = sizeof(glm::vec3);
         uavDesc_posOut.Buffer.CounterOffsetInBytes = 0;
         uavDesc_posOut.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
         CD3DX12_CPU_DESCRIPTOR_HANDLE uavHandlePosOut(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), UavPosOut, m_srvUavDescriptorSize);
@@ -509,25 +553,25 @@ void EdgefriendDX12::CreateBuffers() {
 
         UINT indexOutOffset = posOutSize;
         D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc_indexOut = {};
-        uavDesc_indexOut.Format = DXGI_FORMAT_UNKNOWN;
+        uavDesc_indexOut.Format = DXGI_FORMAT_R32_TYPELESS;
         uavDesc_indexOut.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        uavDesc_indexOut.Buffer.FirstElement = indexOutOffset;
-        uavDesc_indexOut.Buffer.NumElements = indexOutCount;
-        uavDesc_indexOut.Buffer.StructureByteStride = sizeof(unsigned char);
+        uavDesc_indexOut.Buffer.FirstElement = 0;
+        uavDesc_indexOut.Buffer.NumElements = new_geometry.indices.size();
+        uavDesc_indexOut.Buffer.StructureByteStride = 0;
         uavDesc_indexOut.Buffer.CounterOffsetInBytes = 0;
-        uavDesc_indexOut.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+        uavDesc_indexOut.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
         CD3DX12_CPU_DESCRIPTOR_HANDLE uavHandleIndexOut(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), UavIndexOut, m_srvUavDescriptorSize);
         m_device->CreateUnorderedAccessView(m_indexBufferOut.Get(), nullptr, &uavDesc_indexOut, uavHandleIndexOut);
 
         UINT sharpnessOutOffset = indexOutOffset + indexOutSize;
         D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc_sharpnessOut = {};
-        uavDesc_sharpnessOut.Format = DXGI_FORMAT_UNKNOWN;
+        uavDesc_sharpnessOut.Format = DXGI_FORMAT_R32_TYPELESS;
         uavDesc_sharpnessOut.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        uavDesc_sharpnessOut.Buffer.FirstElement = sharpnessOutOffset;
-        uavDesc_sharpnessOut.Buffer.NumElements = sharpnessOutCount;
-        uavDesc_sharpnessOut.Buffer.StructureByteStride = sizeof(unsigned char);
+        uavDesc_sharpnessOut.Buffer.FirstElement = 0;
+        uavDesc_sharpnessOut.Buffer.NumElements = new_geometry.friendsAndSharpnesses.size() * sizeof(glm::uvec4) / 4;
+        uavDesc_sharpnessOut.Buffer.StructureByteStride = 0;
         uavDesc_sharpnessOut.Buffer.CounterOffsetInBytes = 0;
-        uavDesc_sharpnessOut.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+        uavDesc_sharpnessOut.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
         CD3DX12_CPU_DESCRIPTOR_HANDLE uavHandleSharpnessOut(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), UavFriendOut, m_srvUavDescriptorSize);
         m_device->CreateUnorderedAccessView(m_friendAndSharpnessBufferOut.Get(), nullptr, &uavDesc_sharpnessOut, uavHandleSharpnessOut);
 
@@ -535,14 +579,115 @@ void EdgefriendDX12::CreateBuffers() {
         D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc_valenceOut = {};
         uavDesc_valenceOut.Format = DXGI_FORMAT_UNKNOWN;
         uavDesc_valenceOut.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        uavDesc_valenceOut.Buffer.FirstElement = valenceOutOffset;
-        uavDesc_valenceOut.Buffer.NumElements = valenceOutCount;
+        uavDesc_valenceOut.Buffer.FirstElement = 0;
+        uavDesc_valenceOut.Buffer.NumElements = new_geometry.valenceStartInfos.size();
         uavDesc_valenceOut.Buffer.StructureByteStride = sizeof(int);
         uavDesc_valenceOut.Buffer.CounterOffsetInBytes = 0;
         uavDesc_valenceOut.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
         CD3DX12_CPU_DESCRIPTOR_HANDLE uavHandleValenceOut(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), UavValenceOut, m_srvUavDescriptorSize);
         m_device->CreateUnorderedAccessView(m_valenceStartInfoBufferOut.Get(), nullptr, &uavDesc_valenceOut, uavHandleValenceOut);
+        printf("posSize: %d, indexOffset: %d, indexSize: %d, sharpnessOffset: %d, sharpnessSize: %d, valenceOffset: %d, valenceSize: %d\n", posOutSize, indexOutOffset, indexOutSize, sharpnessOutOffset, sharpnessOutSize, valenceOutOffset, valenceOutSize);
+    }
+
+}
+
+void EdgefriendDX12::ReadBack() {
+    ThrowIfFailed(m_commandAllocator->Reset());
+    ThrowIfFailed(m_computeCommandList->Reset(m_commandAllocator.Get(), nullptr));
+
+    D3D12_HEAP_PROPERTIES readbackHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK);
+
+    UINT posSize = new_geometry.positions.size() * sizeof(glm::vec3);
+    UINT indexOffset = posSize;
+    UINT indexSize = new_geometry.indices.size() * sizeof(int);
+    UINT sharpnessOffset = indexOffset + indexSize;
+    UINT sharpnessSize = new_geometry.friendsAndSharpnesses.size() * sizeof(glm::uvec4);
+    UINT valenceOffset = sharpnessOffset + sharpnessSize;
+    UINT valenceSize = new_geometry.valenceStartInfos.size() * sizeof(int);
+
+    printf("posSize: %d, indexOffset: %d, indexSize: %d, sharpnessOffset: %d, sharpnessSize: %d, valenceOffset: %d, valenceSize: %d\n", posSize, indexOffset, indexSize, sharpnessOffset, sharpnessSize, valenceOffset, valenceSize);
+
+    UINT totalSize = (posSize + indexSize + sharpnessSize + valenceSize + 255) & ~255;
+
+    D3D12_RESOURCE_DESC readbackBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(totalSize);
+
+    ThrowIfFailed(m_device->CreateCommittedResource(
+        &readbackHeapProperties,
+        D3D12_HEAP_FLAG_NONE,
+        &readbackBufferDesc,
+        D3D12_RESOURCE_STATE_COMMON,
+        nullptr,
+        IID_PPV_ARGS(&m_readbackHeap)));
+    NAME_D3D12_OBJECT(m_readbackHeap);
+
+    // 拷贝资源到 readbackHeap
+    {
+        /*CD3DX12_RESOURCE_BARRIER barriers[] = {
+            CD3DX12_RESOURCE_BARRIER::Transition(
+                m_positionBufferOut.Get(),
+                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_COPY_SOURCE
+            ),
+            CD3DX12_RESOURCE_BARRIER::Transition(
+                m_indexBufferOut.Get(),
+                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_COPY_SOURCE
+            ),
+            CD3DX12_RESOURCE_BARRIER::Transition(
+                m_friendAndSharpnessBufferOut.Get(),
+                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_COPY_SOURCE
+            ),
+            CD3DX12_RESOURCE_BARRIER::Transition(
+                m_valenceStartInfoBufferOut.Get(),
+                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_COPY_SOURCE
+            ),
+            CD3DX12_RESOURCE_BARRIER::Transition(
+                m_readbackHeap.Get(),
+                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_COPY_DEST
+            ),
+        };
+
+        m_computeCommandList->ResourceBarrier(_countof(barriers), barriers);*/
+
+
+        m_computeCommandList->CopyBufferRegion(m_readbackHeap.Get(), 0, m_positionBufferOut.Get(), 0, posSize);
+        m_computeCommandList->CopyBufferRegion(m_readbackHeap.Get(), indexOffset, m_indexBufferOut.Get(), 0, indexSize);
+        m_computeCommandList->CopyBufferRegion(m_readbackHeap.Get(), sharpnessOffset, m_friendAndSharpnessBufferOut.Get(), 0, sharpnessSize);
+        m_computeCommandList->CopyBufferRegion(m_readbackHeap.Get(), valenceOffset, m_valenceStartInfoBufferOut.Get(), 0, valenceSize);
 
     }
 
+    ThrowIfFailed(m_computeCommandList->Close());
+    ID3D12CommandList* ppCommandLists[] = { m_computeCommandList.Get() };
+    m_commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+
+    WaitForRenderContext();
+
+
+    // 把 readbackHeap 里的内容拷贝到 pReadbackHeapData
+    void* pReadbackHeapData;
+    ThrowIfFailed(m_readbackHeap->Map(0, nullptr, reinterpret_cast<void**>(&pReadbackHeapData)));
+    memcpy(new_geometry.positions.data(), pReadbackHeapData, posSize);
+    memcpy(new_geometry.indices.data(), reinterpret_cast<UINT8*>(pReadbackHeapData) + indexOffset, indexSize);
+    memcpy(new_geometry.friendsAndSharpnesses.data(), reinterpret_cast<UINT8*>(pReadbackHeapData) + sharpnessOffset, sharpnessSize);
+    memcpy(new_geometry.valenceStartInfos.data(), reinterpret_cast<UINT8*>(pReadbackHeapData) + valenceOffset, valenceSize);
+    m_readbackHeap->Unmap(0, nullptr);
+}
+
+void EdgefriendDX12::WriteObj() {
+    std::ofstream obj("output_1iter.obj");
+    for (const auto& position : new_geometry.positions) {
+        obj << "v " << position.x << ' ' << position.y << ' ' << position.z << '\n';
+    }
+    for (int i = 0; i < new_geometry.friendsAndSharpnesses.size(); ++i) {
+        obj << 'f';
+        for (int j = 0; j < 4; ++j) {
+            obj << ' ' << new_geometry.indices[4 * i + j] + 1;
+        }
+        obj << '\n';
+    }
+    obj.close();
 }

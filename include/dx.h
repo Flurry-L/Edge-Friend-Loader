@@ -31,33 +31,28 @@ public:
         float sharpnessFactor; 
     };
 
-    int LoadObj(const std::filesystem::path& file);
     void OnInit();
     
 
     void Dispatch(int faceCount, int vertexCount, float sharpness);
 
 private:
-    std::filesystem::path file;
+    std::filesystem::path file = "C:/Users/17480/Desktop/test/spot_quadrangulated.obj";
 
     Edgefriend::EdgefriendGeometry orig_geometry;
+    Edgefriend::EdgefriendGeometry new_geometry;
 
-    UINT posInCount;
-    std::vector<XMFLOAT3> posIn;
-    UINT indexInCount;
-    std::vector<unsigned char> indexIn;
-    UINT sharpnessInCount;
-    std::vector<unsigned char> sharpnessIn;
-    UINT valenceInCount;
-    std::vector<int> valenceIn;
-    UINT posOutCount;
-    std::vector<XMFLOAT3> posOut;
-    UINT indexOutCount;
-    std::vector<unsigned char> indexOut;
-    UINT sharpnessOutCount;
-    std::vector<unsigned char> sharpnessOut;
-    UINT valenceOutCount;
-    std::vector<int> valenceOut;
+    struct oldSize {
+        int F;
+        int V;
+        float sharpnessFactor;
+    };
+
+    struct newSize {
+        int F;
+        int V;
+        float sharpnessFactor;
+    };
 
     enum ComputeRootParameters : UINT32
     {
@@ -92,18 +87,14 @@ private:
     ComPtr<ID3D12Resource> m_constantBufferCS;
 
     ComPtr<ID3D12Resource> m_uploadHeap;
+    ComPtr<ID3D12Resource> m_readbackHeap;
 
     ComPtr<ID3D12Resource> m_positionBufferIn;
-    //ComPtr<ID3D12Resource> m_positionBufferInUpload;
-    
-
     ComPtr<ID3D12Resource> m_indexBufferIn;
     ComPtr<ID3D12Resource> m_friendAndSharpnessBufferIn;
     ComPtr<ID3D12Resource> m_valenceStartInfoBufferIn;
 
     ComPtr<ID3D12Resource> m_positionBufferOut;
-    ComPtr<ID3D12Resource> m_positionBufferOutUpload;
-
     ComPtr<ID3D12Resource> m_indexBufferOut;
     ComPtr<ID3D12Resource> m_friendAndSharpnessBufferOut;
     ComPtr<ID3D12Resource> m_valenceStartInfoBufferOut;
@@ -127,8 +118,10 @@ private:
 
     void CreateBuffers();
     void WaitForRenderContext();
+    void ReadBack();
 
     void LoadObj();
+    void WriteObj();
     void PreProcess(std::vector<glm::vec3> oldPositions,
         std::vector<int> oldIndices,
         std::vector<int> oldIndicesOffsets,
