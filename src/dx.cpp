@@ -201,7 +201,7 @@ void EdgefriendDX12::LoadAssets() {
         UINT compileFlags = 0;
 #endif
 
-        std::ifstream shaderFile("C:/Users/17480/Desktop/dx12/hlsl/edgefriend.hlsl");
+        std::ifstream shaderFile("C:/Users/17480/Desktop/test/hlsl/edgefriend.hlsl");
         if (!shaderFile.is_open()) {
             std::cerr << "Failed to open hlsl." << std::endl;
             return;
