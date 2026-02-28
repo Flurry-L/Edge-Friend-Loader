@@ -30,7 +30,7 @@ int main(int argc, char** argv)
 			return matched ? 0 : 2;
 		}
 
-		dx.OnInit();
+		dx.Run();
 		return 0;
 	}
 	catch (const std::exception& ex) {
