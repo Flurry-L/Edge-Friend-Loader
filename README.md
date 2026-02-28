@@ -1,9 +1,7 @@
 ﻿# Edge-Friend-Loader
 
-<p align="center">
-  <img src="result.png" width="100%" />
-</p>
-本仓库为论文 《Edge-Friend: Fast and Deterministic Catmull-Clark Subdivision Surfaces]》的 dx12 管线复现，[论文链接](https://diglib.eg.org/handle/10.1111/cgf14863)，[官方 CPU 实现与 HLSL](https://github.com/Bloodwyn/edgefriend-supplemental)。
+![result](result.png)
+本仓库为论文 《Edge-Friend: Fast and Deterministic Catmull-Clark Subdivision Surfaces》的 dx12 管线复现，[论文链接](https://diglib.eg.org/handle/10.1111/cgf14863)，[官方 CPU 实现与 HLSL](https://github.com/Bloodwyn/edgefriend-supplemental)。
 
 项目包含：
 - **DX12 版本**：使用 DX12 + 官方的 GPU Compute Shader 执行细分。
