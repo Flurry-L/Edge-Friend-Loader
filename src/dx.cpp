@@ -2,19 +2,128 @@
 #include "DXSampleHelper.h"
 #include <glm/gtx/hash.hpp>
 #include <stdexcept>
+#include <algorithm>
+#include <limits>
+#include <sstream>
 
 using Microsoft::WRL::ComPtr;
+
+namespace {
+constexpr float kDefaultSharpnessFactor = 1.0f;
+
+struct BufferLayout {
+    UINT64 positionBytes = 0;
+    UINT64 indexBytes = 0;
+    UINT64 sharpnessBytes = 0;
+    UINT64 valenceBytes = 0;
+
+    UINT64 indexOffset = 0;
+    UINT64 sharpnessOffset = 0;
+    UINT64 valenceOffset = 0;
+    UINT64 totalBytes = 0;
+};
+
+UINT64 Align256(UINT64 size) {
+    return (size + 255ull) & ~255ull;
+}
+
+UINT64 ByteSize(std::size_t elementCount, std::size_t elementSize) {
+    return static_cast<UINT64>(elementCount) * static_cast<UINT64>(elementSize);
+}
+
+BufferLayout BuildBufferLayout(const Edgefriend::EdgefriendGeometry& geometry) {
+    BufferLayout layout;
+    layout.positionBytes = ByteSize(geometry.positions.size(), sizeof(glm::vec3));
+    layout.indexBytes = ByteSize(geometry.indices.size(), sizeof(int));
+    layout.sharpnessBytes = ByteSize(geometry.friendsAndSharpnesses.size(), sizeof(glm::uvec4));
+    layout.valenceBytes = ByteSize(geometry.valenceStartInfos.size(), sizeof(int));
+
+    layout.indexOffset = layout.positionBytes;
+    layout.sharpnessOffset = layout.indexOffset + layout.indexBytes;
+    layout.valenceOffset = layout.sharpnessOffset + layout.sharpnessBytes;
+    layout.totalBytes = layout.valenceOffset + layout.valenceBytes;
+
+    return layout;
+}
+
+UINT ToUintChecked(UINT64 value, const char* label) {
+    if (value > static_cast<UINT64>(std::numeric_limits<UINT>::max())) {
+        throw std::runtime_error(std::string(label) + " exceeds UINT range.");
+    }
+    return static_cast<UINT>(value);
+}
+
+UINT ComputeDispatchGroupCount(int vertexCount, int faceCount, UINT threadsPerGroup) {
+    if (vertexCount < 0 || faceCount < 0) {
+        throw std::runtime_error("Negative dispatch dimensions are invalid.");
+    }
+    const UINT64 dispatchThreads = static_cast<UINT64>(std::max(vertexCount, faceCount));
+    const UINT64 groups64 = (dispatchThreads + threadsPerGroup - 1u) / threadsPerGroup;
+    return ToUintChecked(groups64, "Dispatch group count");
+}
+
+struct ObjData {
+    std::vector<glm::vec3> vertices;
+    std::vector<glm::ivec4> faces;
+};
+
+int ParseObjIndexToken(const std::string& token) {
+    const auto slashPos = token.find('/');
+    const std::string numberPart = (slashPos == std::string::npos) ? token : token.substr(0, slashPos);
+    return std::stoi(numberPart);
+}
+
+ObjData LoadObjData(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input.is_open()) {
+        throw std::runtime_error("Failed to open OBJ file for comparison: " + path.string());
+    }
+
+    ObjData data;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.size() > 2 && line[0] == 'v' && line[1] == ' ') {
+            std::istringstream lineStream(line.substr(2));
+            glm::vec3 vertex{};
+            lineStream >> vertex.x >> vertex.y >> vertex.z;
+            if (!lineStream.fail()) {
+                data.vertices.push_back(vertex);
+            }
+        }
+        else if (line.size() > 2 && line[0] == 'f' && line[1] == ' ') {
+            std::istringstream lineStream(line.substr(2));
+            std::string token0, token1, token2, token3;
+            lineStream >> token0 >> token1 >> token2 >> token3;
+            if (!lineStream.fail()) {
+                data.faces.emplace_back(
+                    ParseObjIndexToken(token0),
+                    ParseObjIndexToken(token1),
+                    ParseObjIndexToken(token2),
+                    ParseObjIndexToken(token3)
+                );
+            }
+        }
+    }
+
+    return data;
+}
+} // namespace
+
+EdgefriendDX12::~EdgefriendDX12() {
+    if (m_renderContextFenceEvent != nullptr) {
+        CloseHandle(m_renderContextFenceEvent);
+        m_renderContextFenceEvent = nullptr;
+    }
+}
 
 void EdgefriendDX12::LoadObj() {
     auto model = rapidobj::ParseFile(file);
     if (model.error) {
-        std::cerr << "Error: OBJ file" << file << "could not be loaded.";
-        return;
+        throw std::runtime_error("OBJ file could not be loaded: " + file.string());
     }
 
     if (model.shapes.size() == 0) {
-        std::cerr << "Error: OBJ file" << file << "does not contain a mesh.";
-        return;
+        throw std::runtime_error("OBJ file does not contain a mesh: " + file.string());
     }
 
     const auto& objmesh = model.shapes.front().mesh;
@@ -69,6 +178,27 @@ void EdgefriendDX12::OnInit() {
     WriteObj();
 }
 
+bool EdgefriendDX12::RunAndCompareWithCpu(float positionEpsilon) {
+    if (positionEpsilon <= 0.0f) {
+        throw std::invalid_argument("positionEpsilon must be > 0.");
+    }
+
+    OnInit();
+
+    const std::filesystem::path dx12Path = "output_" + std::to_string(iters) + "iter.obj";
+    const std::filesystem::path cpuPath = "output_cpp_" + std::to_string(iters) + "iter.obj";
+
+    const auto cpuResult = RunCpuSubdivision();
+    WriteObj(cpuPath, cpuResult);
+
+    const bool isConsistent = CompareObjFiles(dx12Path, cpuPath, positionEpsilon);
+    std::cout << "[Check] Compared files: " << dx12Path.string() << " vs " << cpuPath.string()
+              << " (epsilon=" << positionEpsilon << ")\n";
+    std::cout << (isConsistent ? "[Check] DX12 and C++ OBJ outputs are consistent.\n"
+                               : "[Check] DX12 and C++ OBJ outputs differ.\n");
+    return isConsistent;
+}
+
 
 void EdgefriendDX12::LoadPipeline() {
     UINT dxgiFactoryFlags = 0;
@@ -89,12 +219,15 @@ void EdgefriendDX12::LoadPipeline() {
     }
 #endif
     ComPtr<IDXGIFactory4> dxgiFactory;
-    ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&dxgiFactory)));
+    ThrowIfFailed(CreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&dxgiFactory)));
     std::vector<ComPtr<IDXGIAdapter1>> adapters;
     ComPtr<IDXGIAdapter1> adapter;
 
     for (UINT adapterIndex = 0; DXGI_ERROR_NOT_FOUND != dxgiFactory->EnumAdapters1(adapterIndex, &adapter); ++adapterIndex) {
         adapters.push_back(adapter);
+    }
+    if (adapters.empty()) {
+        throw std::runtime_error("No DXGI adapters found.");
     }
 
     // List the adapters and let the user choose
@@ -109,17 +242,18 @@ void EdgefriendDX12::LoadPipeline() {
     std::cout << "Enter the number of the device you want to create: ";
     size_t choice;
     std::cin >> choice;
+    if (!std::cin) {
+        throw std::runtime_error("Failed to read adapter selection.");
+    }
 
     if (choice >= adapters.size()) {
-        std::cerr << "Invalid selection.\n";
-        return;
+        throw std::runtime_error("Invalid adapter selection.");
     }
 
     // Device creation logic using the selected adapter
-    //ComPtr<ID3D12Device> m_device;
-    if (D3D12CreateDevice(adapters[choice].Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_device)) != S_OK) {
-        std::cerr << "Failed to create D3D12 device.\n";
-        return;
+    const HRESULT createDeviceResult = D3D12CreateDevice(adapters[choice].Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_device));
+    if (FAILED(createDeviceResult)) {
+        throw std::runtime_error("Failed to create D3D12 device.");
     }
 
     // m_device now contains the created device
@@ -142,7 +276,7 @@ void EdgefriendDX12::LoadPipeline() {
         std::cout << "Shared System Memory: " << adapterDesc.SharedSystemMemory << std::endl;
     }
     else {
-        std::cerr << "Failed to get adapter description.\n";
+        throw std::runtime_error("Failed to get adapter description.");
     }
 
     // Describe and create the command queue.
@@ -201,10 +335,9 @@ void EdgefriendDX12::LoadAssets() {
         UINT compileFlags = 0;
 #endif
 
-        std::ifstream shaderFile("C:/Users/17480/Desktop/test/hlsl/edgefriend.hlsl");
+        std::ifstream shaderFile("hlsl/edgefriend.hlsl");
         if (!shaderFile.is_open()) {
-            std::cerr << "Failed to open hlsl." << std::endl;
-            return;
+            throw std::runtime_error("Failed to open hlsl/edgefriend.hlsl");
         }
         std::stringstream shaderStream;
         shaderStream << shaderFile.rdbuf();
@@ -214,7 +347,7 @@ void EdgefriendDX12::LoadAssets() {
         ComPtr<ID3DBlob> computeShader;
         ThrowIfFailed(D3DCompile(shaderCode.data(), shaderCode.size(),
             nullptr, nullptr, nullptr,
-            "CSEdgefriend", "cs_5_1", 0, 0, &computeShader, nullptr));
+            "CSEdgefriend", "cs_5_1", compileFlags, 0, &computeShader, nullptr));
         //std::cout << shaderCode;
 
         D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
@@ -230,18 +363,7 @@ void EdgefriendDX12::LoadAssets() {
     // Create the command list.
     m_computeCommandList = nullptr;
     ThrowIfFailed(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocator.Get(), m_pipelineState.Get(), IID_PPV_ARGS(&m_computeCommandList)));
-    m_computeCommandList->SetComputeRootSignature(m_rootSignature.Get());
-
-    ID3D12DescriptorHeap* ppHeaps[] = { m_srvUavHeap.Get() };
-    m_computeCommandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
-
-    CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(m_srvUavHeap->GetGPUDescriptorHandleForHeapStart(), SrvPosIn, m_srvUavDescriptorSize);
-    CD3DX12_GPU_DESCRIPTOR_HANDLE uavHandle(m_srvUavHeap->GetGPUDescriptorHandleForHeapStart(), UavPosOut, m_srvUavDescriptorSize);
-
-    m_computeCommandList->SetComputeRootConstantBufferView(ComputeRootCBV, m_constantBufferCS->GetGPUVirtualAddress());
-    m_computeCommandList->SetComputeRootDescriptorTable(ComputeRootSRVTable, srvHandle);
-    m_computeCommandList->SetComputeRootDescriptorTable(ComputeRootUAVTable, uavHandle);
-    NAME_D3D12_OBJECT(m_computeCommandList);
+    BindComputeState();
 
     SetBuffers();
 
@@ -250,10 +372,8 @@ void EdgefriendDX12::LoadAssets() {
     ThrowIfFailed(constantBufferCSUpload->Map(0, nullptr, reinterpret_cast<void**>(&constantBufferCS)));
     constantBufferCS->F = orig_geometry.friendsAndSharpnesses.size();
     constantBufferCS->V = orig_geometry.positions.size();
-    constantBufferCS->sharpnessFactor = 1;
+    constantBufferCS->sharpnessFactor = kDefaultSharpnessFactor;
     
-    int old_i = orig_geometry.indices.size();
-
     {
         ThrowIfFailed(m_device->CreateFence(m_renderContextFenceValue, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_renderContextFence)));
         m_renderContextFenceValue++;
@@ -277,83 +397,63 @@ void EdgefriendDX12::LoadAssets() {
         CD3DX12_RESOURCE_BARRIER barrier;
         barrier = CD3DX12_RESOURCE_BARRIER::Transition(m_constantBufferCS.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
         m_computeCommandList->ResourceBarrier(1, &barrier);
-        /*D3D12_RESOURCE_BARRIER barrier = {};
 
-        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-        barrier.Transition.pResource = m_constantBufferCS.Get();
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_GENERIC_READ;
-        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;*/
-
-        /*m_computeCommandList->ResourceBarrier(1, &barrier);*/
-
-        m_computeCommandList->Dispatch(orig_geometry.positions.size(), 1, 1);
+        // Thread groups must scale with the current iteration's working set, not the initial mesh.
+        const UINT dispatchGroups = ComputeDispatchGroupCount(constantBufferCS->V, constantBufferCS->F, kComputeThreadsPerGroup);
+        m_computeCommandList->Dispatch(dispatchGroups, 1, 1);
         ThrowIfFailed(m_computeCommandList->Close());
 
         ID3D12CommandList* ppCommandLists[] = { m_computeCommandList.Get() };
         m_commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
 
-        // Create synchronization objects and wait until assets have been uploaded to the GPU.
-        {
-            
+        WaitForRenderContext();
 
-            WaitForRenderContext();
-        }
-
-        
-
-        std::swap(m_positionBufferIn, m_positionBufferOut);
-        std::swap(m_indexBufferIn, m_indexBufferOut);
-        std::swap(m_friendAndSharpnessBufferIn, m_friendAndSharpnessBufferOut);
-        std::swap(m_valenceStartInfoBufferIn, m_valenceStartInfoBufferOut);
+        SwapGeometryBuffers();
         CreateSrvUavViews();
 
         ThrowIfFailed(m_commandAllocator->Reset());
         ThrowIfFailed(m_computeCommandList->Reset(m_commandAllocator.Get(), m_pipelineState.Get()));
-        m_computeCommandList->SetComputeRootSignature(m_rootSignature.Get());
-        ID3D12DescriptorHeap* ppHeaps[] = { m_srvUavHeap.Get() };
-        m_computeCommandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
+        BindComputeState();
 
-        CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(m_srvUavHeap->GetGPUDescriptorHandleForHeapStart(), SrvPosIn, m_srvUavDescriptorSize);
-        CD3DX12_GPU_DESCRIPTOR_HANDLE uavHandle(m_srvUavHeap->GetGPUDescriptorHandleForHeapStart(), UavPosOut, m_srvUavDescriptorSize);
-
-        m_computeCommandList->SetComputeRootConstantBufferView(ComputeRootCBV, m_constantBufferCS->GetGPUVirtualAddress());
-        m_computeCommandList->SetComputeRootDescriptorTable(ComputeRootSRVTable, srvHandle);
-        m_computeCommandList->SetComputeRootDescriptorTable(ComputeRootUAVTable, uavHandle);
-        NAME_D3D12_OBJECT(m_computeCommandList);
-
-        /*barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-        barrier.Transition.pResource = m_constantBufferCS.Get();
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_GENERIC_READ;
-        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
-        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-
-        m_computeCommandList->ResourceBarrier(1, &barrier);*/
-
-        //new_geometry.positions.resize(4 * orig_geometry.positions.size());
-        //new_geometry.indices.resize(orig_geometry.indices.size() * 4);
-        //new_geometry.friendsAndSharpnesses.resize(orig_geometry.indices.size());
-        //new_geometry.valenceStartInfos.resize(4 * orig_geometry.positions.size());
-
-        constantBufferCS->F = old_i;
-        constantBufferCS->V = 4 * constantBufferCS->V;
-        old_i = old_i * 4;
+        constantBufferCS->F *= 4;
+        constantBufferCS->V *= 4;
         
     }
 
-    std::swap(m_positionBufferIn, m_positionBufferOut);
-    std::swap(m_indexBufferIn, m_indexBufferOut);
-    std::swap(m_friendAndSharpnessBufferIn, m_friendAndSharpnessBufferOut);
-    std::swap(m_valenceStartInfoBufferIn, m_valenceStartInfoBufferOut);
+    SwapGeometryBuffers();
     ThrowIfFailed(m_computeCommandList->Close());
     constantBufferCSUpload->Unmap(0, nullptr);
     CreateSrvUavViews();
 
 }
 
+void EdgefriendDX12::BindComputeState() {
+    m_computeCommandList->SetComputeRootSignature(m_rootSignature.Get());
+    ID3D12DescriptorHeap* descriptorHeaps[] = { m_srvUavHeap.Get() };
+    m_computeCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
+
+    CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(m_srvUavHeap->GetGPUDescriptorHandleForHeapStart(), SrvPosIn, m_srvUavDescriptorSize);
+    CD3DX12_GPU_DESCRIPTOR_HANDLE uavHandle(m_srvUavHeap->GetGPUDescriptorHandleForHeapStart(), UavPosOut, m_srvUavDescriptorSize);
+
+    m_computeCommandList->SetComputeRootConstantBufferView(ComputeRootCBV, m_constantBufferCS->GetGPUVirtualAddress());
+    m_computeCommandList->SetComputeRootDescriptorTable(ComputeRootSRVTable, srvHandle);
+    m_computeCommandList->SetComputeRootDescriptorTable(ComputeRootUAVTable, uavHandle);
+    NAME_D3D12_OBJECT(m_computeCommandList);
+}
+
+void EdgefriendDX12::SwapGeometryBuffers() {
+    std::swap(m_positionBufferIn, m_positionBufferOut);
+    std::swap(m_indexBufferIn, m_indexBufferOut);
+    std::swap(m_friendAndSharpnessBufferIn, m_friendAndSharpnessBufferOut);
+    std::swap(m_valenceStartInfoBufferIn, m_valenceStartInfoBufferOut);
+}
+
 void EdgefriendDX12::CreateSrvUavViews() {
+    const auto layout = BuildBufferLayout(result);
+    const UINT positionCount = ToUintChecked(static_cast<UINT64>(result.positions.size()), "Position element count");
+    const UINT indexCount = ToUintChecked(static_cast<UINT64>(result.indices.size()), "Index element count");
+    const UINT sharpnessWordCount = ToUintChecked(layout.sharpnessBytes / sizeof(UINT32), "Sharpness word count");
+    const UINT valenceCount = ToUintChecked(static_cast<UINT64>(result.valenceStartInfos.size()), "Valence element count");
 
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc_posIn = {};
@@ -361,7 +461,7 @@ void EdgefriendDX12::CreateSrvUavViews() {
         srvDesc_posIn.Format = DXGI_FORMAT_UNKNOWN;
         srvDesc_posIn.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
         srvDesc_posIn.Buffer.FirstElement = 0;
-        srvDesc_posIn.Buffer.NumElements = result.positions.size();
+        srvDesc_posIn.Buffer.NumElements = positionCount;
         srvDesc_posIn.Buffer.StructureByteStride = sizeof(glm::vec3);
         srvDesc_posIn.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
         CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandlePosIn(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), SrvPosIn, m_srvUavDescriptorSize);
@@ -372,7 +472,7 @@ void EdgefriendDX12::CreateSrvUavViews() {
         srvDesc_indexIn.Format = DXGI_FORMAT_R32_TYPELESS;
         srvDesc_indexIn.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
         srvDesc_indexIn.Buffer.FirstElement = 0;
-        srvDesc_indexIn.Buffer.NumElements = result.indices.size();
+        srvDesc_indexIn.Buffer.NumElements = indexCount;
         srvDesc_indexIn.Buffer.StructureByteStride = 0;
         srvDesc_indexIn.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
         CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleIndexIn(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), SrvIndexIn, m_srvUavDescriptorSize);
@@ -383,7 +483,7 @@ void EdgefriendDX12::CreateSrvUavViews() {
         srvDesc_sharpnessIn.Format = DXGI_FORMAT_R32_TYPELESS;
         srvDesc_sharpnessIn.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
         srvDesc_sharpnessIn.Buffer.FirstElement = 0;
-        srvDesc_sharpnessIn.Buffer.NumElements = result.friendsAndSharpnesses.size() * sizeof(glm::uvec4) / 4;
+        srvDesc_sharpnessIn.Buffer.NumElements = sharpnessWordCount;
         srvDesc_sharpnessIn.Buffer.StructureByteStride = 0;
         srvDesc_sharpnessIn.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
         CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleSharpnessIn(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), SrvFriendIn, m_srvUavDescriptorSize);
@@ -394,13 +494,11 @@ void EdgefriendDX12::CreateSrvUavViews() {
         srvDesc_valenceIn.Format = DXGI_FORMAT_UNKNOWN;
         srvDesc_valenceIn.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
         srvDesc_valenceIn.Buffer.FirstElement = 0;
-        srvDesc_valenceIn.Buffer.NumElements = result.valenceStartInfos.size();
+        srvDesc_valenceIn.Buffer.NumElements = valenceCount;
         srvDesc_valenceIn.Buffer.StructureByteStride = sizeof(int);
         srvDesc_valenceIn.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
         CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleValenceIn(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), SrvValenceIn, m_srvUavDescriptorSize);
         m_device->CreateShaderResourceView(m_valenceStartInfoBufferIn.Get(), &srvDesc_valenceIn, srvHandleValenceIn);
-
-
     }
 
     {
@@ -408,7 +506,7 @@ void EdgefriendDX12::CreateSrvUavViews() {
         uavDesc_posOut.Format = DXGI_FORMAT_UNKNOWN;
         uavDesc_posOut.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
         uavDesc_posOut.Buffer.FirstElement = 0;
-        uavDesc_posOut.Buffer.NumElements = result.positions.size();
+        uavDesc_posOut.Buffer.NumElements = positionCount;
         uavDesc_posOut.Buffer.StructureByteStride = sizeof(glm::vec3);
         uavDesc_posOut.Buffer.CounterOffsetInBytes = 0;
         uavDesc_posOut.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
@@ -419,7 +517,7 @@ void EdgefriendDX12::CreateSrvUavViews() {
         uavDesc_indexOut.Format = DXGI_FORMAT_R32_TYPELESS;
         uavDesc_indexOut.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
         uavDesc_indexOut.Buffer.FirstElement = 0;
-        uavDesc_indexOut.Buffer.NumElements = result.indices.size();
+        uavDesc_indexOut.Buffer.NumElements = indexCount;
         uavDesc_indexOut.Buffer.StructureByteStride = 0;
         uavDesc_indexOut.Buffer.CounterOffsetInBytes = 0;
         uavDesc_indexOut.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
@@ -430,7 +528,7 @@ void EdgefriendDX12::CreateSrvUavViews() {
         uavDesc_sharpnessOut.Format = DXGI_FORMAT_R32_TYPELESS;
         uavDesc_sharpnessOut.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
         uavDesc_sharpnessOut.Buffer.FirstElement = 0;
-        uavDesc_sharpnessOut.Buffer.NumElements = result.friendsAndSharpnesses.size() * sizeof(glm::uvec4) / 4;
+        uavDesc_sharpnessOut.Buffer.NumElements = sharpnessWordCount;
         uavDesc_sharpnessOut.Buffer.StructureByteStride = 0;
         uavDesc_sharpnessOut.Buffer.CounterOffsetInBytes = 0;
         uavDesc_sharpnessOut.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
@@ -441,7 +539,7 @@ void EdgefriendDX12::CreateSrvUavViews() {
         uavDesc_valenceOut.Format = DXGI_FORMAT_UNKNOWN;
         uavDesc_valenceOut.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
         uavDesc_valenceOut.Buffer.FirstElement = 0;
-        uavDesc_valenceOut.Buffer.NumElements = result.valenceStartInfos.size();
+        uavDesc_valenceOut.Buffer.NumElements = valenceCount;
         uavDesc_valenceOut.Buffer.StructureByteStride = sizeof(int);
         uavDesc_valenceOut.Buffer.CounterOffsetInBytes = 0;
         uavDesc_valenceOut.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
@@ -451,6 +549,10 @@ void EdgefriendDX12::CreateSrvUavViews() {
 }
 
 void EdgefriendDX12::WaitForRenderContext() {
+    if (m_renderContextFenceEvent == nullptr) {
+        throw std::runtime_error("Fence event is not initialized.");
+    }
+
     // Add a signal command to the queue.
     ThrowIfFailed(m_commandQueue->Signal(m_renderContextFence.Get(), m_renderContextFenceValue));
 
@@ -464,60 +566,52 @@ void EdgefriendDX12::WaitForRenderContext() {
 
 
 void EdgefriendDX12::SetBuffers() {
-    
-    
+    const auto inputLayout = BuildBufferLayout(orig_geometry);
+
     // upload heap
     UINT8* pUploadHeapData;
     ThrowIfFailed(m_uploadHeap->Map(0, nullptr, reinterpret_cast<void**>(&pUploadHeapData)));
 
-    memcpy(pUploadHeapData, orig_geometry.positions.data(), orig_geometry.positions.size() * sizeof(glm::vec3));
-    UINT indexInOffset = orig_geometry.positions.size() * sizeof(glm::vec3);
-    memcpy(pUploadHeapData + indexInOffset, orig_geometry.indices.data(), orig_geometry.indices.size() * sizeof(int));
-    UINT sharpnessInOffset = indexInOffset + orig_geometry.indices.size() * sizeof(int);
-    memcpy(pUploadHeapData + sharpnessInOffset, orig_geometry.friendsAndSharpnesses.data(), orig_geometry.friendsAndSharpnesses.size() * sizeof(glm::uvec4));
-    UINT valenceInOffset = sharpnessInOffset + orig_geometry.friendsAndSharpnesses.size() * sizeof(glm::uvec4);
-    memcpy(pUploadHeapData + valenceInOffset, orig_geometry.valenceStartInfos.data(), orig_geometry.valenceStartInfos.size() * sizeof(int));
+    memcpy(pUploadHeapData, orig_geometry.positions.data(), static_cast<std::size_t>(inputLayout.positionBytes));
+    memcpy(pUploadHeapData + inputLayout.indexOffset, orig_geometry.indices.data(), static_cast<std::size_t>(inputLayout.indexBytes));
+    memcpy(pUploadHeapData + inputLayout.sharpnessOffset, orig_geometry.friendsAndSharpnesses.data(), static_cast<std::size_t>(inputLayout.sharpnessBytes));
+    memcpy(pUploadHeapData + inputLayout.valenceOffset, orig_geometry.valenceStartInfos.data(), static_cast<std::size_t>(inputLayout.valenceBytes));
 
     m_uploadHeap->Unmap(0, nullptr);
 
     // input resources
-    m_computeCommandList->CopyBufferRegion(m_positionBufferIn.Get(), 0, m_uploadHeap.Get(), 0, orig_geometry.positions.size() * sizeof(glm::vec3));
-    m_computeCommandList->CopyBufferRegion(m_indexBufferIn.Get(), 0, m_uploadHeap.Get(), indexInOffset, orig_geometry.indices.size() * sizeof(int));
-    m_computeCommandList->CopyBufferRegion(m_friendAndSharpnessBufferIn.Get(), 0, m_uploadHeap.Get(), sharpnessInOffset, orig_geometry.friendsAndSharpnesses.size() * sizeof(glm::uvec4));
-    m_computeCommandList->CopyBufferRegion(m_valenceStartInfoBufferIn.Get(), 0, m_uploadHeap.Get(), valenceInOffset, orig_geometry.valenceStartInfos.size() * sizeof(int));
+    m_computeCommandList->CopyBufferRegion(m_positionBufferIn.Get(), 0, m_uploadHeap.Get(), 0, inputLayout.positionBytes);
+    m_computeCommandList->CopyBufferRegion(m_indexBufferIn.Get(), 0, m_uploadHeap.Get(), inputLayout.indexOffset, inputLayout.indexBytes);
+    m_computeCommandList->CopyBufferRegion(m_friendAndSharpnessBufferIn.Get(), 0, m_uploadHeap.Get(), inputLayout.sharpnessOffset, inputLayout.sharpnessBytes);
+    m_computeCommandList->CopyBufferRegion(m_valenceStartInfoBufferIn.Get(), 0, m_uploadHeap.Get(), inputLayout.valenceOffset, inputLayout.valenceBytes);
 
 }
 
 void EdgefriendDX12::CreateHeapAndViews() {
-    UINT posSize = result.positions.size() * sizeof(glm::vec3);
-    UINT indexSize = result.indices.size() * sizeof(int);
-    UINT sharpnessSize = result.friendsAndSharpnesses.size() * sizeof(glm::uvec4);
-    UINT valenceSize = result.valenceStartInfos.size() * sizeof(int);
-
-    UINT totalSize = posSize + indexSize + sharpnessSize + valenceSize;
+    const auto layout = BuildBufferLayout(result);
 
     D3D12_HEAP_PROPERTIES defaultHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
     D3D12_HEAP_PROPERTIES uploadHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
     D3D12_HEAP_PROPERTIES readbackHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK);
 
-    D3D12_RESOURCE_DESC uploadBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(align_256(totalSize));
-    D3D12_RESOURCE_DESC readbackBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(align_256(totalSize));
+    D3D12_RESOURCE_DESC uploadBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(Align256(layout.totalBytes));
+    D3D12_RESOURCE_DESC readbackBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(Align256(layout.totalBytes));
 
-    D3D12_RESOURCE_DESC posBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(align_256(posSize));
+    D3D12_RESOURCE_DESC posBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(Align256(layout.positionBytes));
     posBufferDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
-    D3D12_RESOURCE_DESC indexBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(align_256(indexSize));
+    D3D12_RESOURCE_DESC indexBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(Align256(layout.indexBytes));
     indexBufferDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
-    D3D12_RESOURCE_DESC sharpnessBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(align_256(sharpnessSize));
+    D3D12_RESOURCE_DESC sharpnessBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(Align256(layout.sharpnessBytes));
     sharpnessBufferDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
-    D3D12_RESOURCE_DESC valenceBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(align_256(valenceSize));
+    D3D12_RESOURCE_DESC valenceBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(Align256(layout.valenceBytes));
     valenceBufferDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
     {
         CD3DX12_HEAP_PROPERTIES constantBufferHeapProps(D3D12_HEAP_TYPE_DEFAULT);
-        CD3DX12_RESOURCE_DESC constantBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(align_256(sizeof(ConstantBufferCS)));
+        CD3DX12_RESOURCE_DESC constantBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(Align256(sizeof(ConstantBufferCS)));
 
         ThrowIfFailed(m_device->CreateCommittedResource(
             &constantBufferHeapProps,
@@ -528,7 +622,7 @@ void EdgefriendDX12::CreateHeapAndViews() {
             IID_PPV_ARGS(&m_constantBufferCS)));
 
         CD3DX12_HEAP_PROPERTIES heapPropsUpload(D3D12_HEAP_TYPE_UPLOAD);
-        CD3DX12_RESOURCE_DESC resourceDescUpload = CD3DX12_RESOURCE_DESC::Buffer(align_256(sizeof(ConstantBufferCS)));
+        CD3DX12_RESOURCE_DESC resourceDescUpload = CD3DX12_RESOURCE_DESC::Buffer(Align256(sizeof(ConstantBufferCS)));
 
         ThrowIfFailed(m_device->CreateCommittedResource(
             &heapPropsUpload,
@@ -631,7 +725,6 @@ void EdgefriendDX12::CreateHeapAndViews() {
         ));
         NAME_D3D12_OBJECT(m_valenceStartInfoBufferIn);
 
-        
     }
 
     CreateSrvUavViews();
@@ -646,24 +739,21 @@ void EdgefriendDX12::CreateHeapAndViews() {
             IID_PPV_ARGS(&m_readbackHeap)));
         NAME_D3D12_OBJECT(m_readbackHeap);
     }
-
-
 }
 
 
 void EdgefriendDX12::ReadBack() {
+    const auto outputLayout = BuildBufferLayout(result);
+
     ThrowIfFailed(m_commandAllocator->Reset());
     ThrowIfFailed(m_computeCommandList->Reset(m_commandAllocator.Get(), nullptr));
 
 
     // 拷贝资源到 readbackHeap
-    m_computeCommandList->CopyBufferRegion(m_readbackHeap.Get(), 0, m_positionBufferOut.Get(), 0, result.positions.size() * sizeof(glm::vec3));
-    UINT indexOffset = result.positions.size() * sizeof(glm::vec3);
-    m_computeCommandList->CopyBufferRegion(m_readbackHeap.Get(), indexOffset, m_indexBufferOut.Get(), 0, result.indices.size() * sizeof(int));
-    UINT sharpnessOffset = indexOffset + result.indices.size() * sizeof(int);
-    m_computeCommandList->CopyBufferRegion(m_readbackHeap.Get(), sharpnessOffset, m_friendAndSharpnessBufferOut.Get(), 0, result.friendsAndSharpnesses.size() * sizeof(glm::uvec4));
-    UINT valenceOffset = sharpnessOffset + result.friendsAndSharpnesses.size() * sizeof(glm::uvec4);
-    m_computeCommandList->CopyBufferRegion(m_readbackHeap.Get(), valenceOffset, m_valenceStartInfoBufferOut.Get(), 0, result.valenceStartInfos.size() * sizeof(int));
+    m_computeCommandList->CopyBufferRegion(m_readbackHeap.Get(), 0, m_positionBufferOut.Get(), 0, outputLayout.positionBytes);
+    m_computeCommandList->CopyBufferRegion(m_readbackHeap.Get(), outputLayout.indexOffset, m_indexBufferOut.Get(), 0, outputLayout.indexBytes);
+    m_computeCommandList->CopyBufferRegion(m_readbackHeap.Get(), outputLayout.sharpnessOffset, m_friendAndSharpnessBufferOut.Get(), 0, outputLayout.sharpnessBytes);
+    m_computeCommandList->CopyBufferRegion(m_readbackHeap.Get(), outputLayout.valenceOffset, m_valenceStartInfoBufferOut.Get(), 0, outputLayout.valenceBytes);
     
 
     ThrowIfFailed(m_computeCommandList->Close());
@@ -676,42 +766,109 @@ void EdgefriendDX12::ReadBack() {
     // 把 readbackHeap 里的内容拷贝到 pReadbackHeapData
     void* pReadbackHeapData;
     ThrowIfFailed(m_readbackHeap->Map(0, nullptr, reinterpret_cast<void**>(&pReadbackHeapData)));
-    memcpy(result.positions.data(), pReadbackHeapData, result.positions.size() * sizeof(glm::vec3));
-    memcpy(result.indices.data(), reinterpret_cast<UINT8*>(pReadbackHeapData) + indexOffset, result.indices.size() * sizeof(int));
-    memcpy(result.friendsAndSharpnesses.data(), reinterpret_cast<UINT8*>(pReadbackHeapData) + sharpnessOffset, result.friendsAndSharpnesses.size() * sizeof(glm::uvec4));
-    memcpy(result.valenceStartInfos.data(), reinterpret_cast<UINT8*>(pReadbackHeapData) + valenceOffset, result.valenceStartInfos.size() * sizeof(int));
+    auto* readbackBytes = reinterpret_cast<UINT8*>(pReadbackHeapData);
+    memcpy(result.positions.data(), readbackBytes, static_cast<std::size_t>(outputLayout.positionBytes));
+    memcpy(result.indices.data(), readbackBytes + outputLayout.indexOffset, static_cast<std::size_t>(outputLayout.indexBytes));
+    memcpy(result.friendsAndSharpnesses.data(), readbackBytes + outputLayout.sharpnessOffset, static_cast<std::size_t>(outputLayout.sharpnessBytes));
+    memcpy(result.valenceStartInfos.data(), readbackBytes + outputLayout.valenceOffset, static_cast<std::size_t>(outputLayout.valenceBytes));
     m_readbackHeap->Unmap(0, nullptr);
 }
 
 void EdgefriendDX12::WriteObj() {
-    std::ofstream obj("output_1iter.obj");
-    for (const auto& position : result.positions) {
+    const std::string outputFile = "output_" + std::to_string(iters) + "iter.obj";
+    WriteObj(outputFile, result);
+}
+
+void EdgefriendDX12::WriteObj(const std::filesystem::path& outputPath, const Edgefriend::EdgefriendGeometry& geometry) const {
+    std::ofstream obj(outputPath);
+    if (!obj.is_open()) {
+        throw std::runtime_error("Failed to open output file: " + outputPath.string());
+    }
+
+    for (const auto& position : geometry.positions) {
         obj << "v " << position.x << ' ' << position.y << ' ' << position.z << '\n';
     }
-    for (int i = 0; i < result.friendsAndSharpnesses.size(); ++i) {
+    for (int i = 0; i < static_cast<int>(geometry.friendsAndSharpnesses.size()); ++i) {
         obj << 'f';
         for (int j = 0; j < 4; ++j) {
-            obj << ' ' << result.indices[4 * i + j] + 1;
+            obj << ' ' << geometry.indices[4 * i + j] + 1;
         }
         obj << '\n';
     }
     obj.close();
 }
 
+Edgefriend::EdgefriendGeometry EdgefriendDX12::RunCpuSubdivision() const {
+    auto cpuGeometry = orig_geometry;
+    for (int i = 0; i < iters; ++i) {
+        cpuGeometry = Edgefriend::SubdivideEdgefriendGeometry(cpuGeometry);
+    }
+    return cpuGeometry;
+}
+
+bool EdgefriendDX12::CompareObjFiles(const std::filesystem::path& dx12Path, const std::filesystem::path& cpuPath, float positionEpsilon) const {
+    const ObjData dx12Data = LoadObjData(dx12Path);
+    const ObjData cpuData = LoadObjData(cpuPath);
+
+    if (dx12Data.vertices.size() != cpuData.vertices.size()) {
+        std::cerr << "[Check] Vertex count mismatch: DX12=" << dx12Data.vertices.size()
+                  << ", CPU=" << cpuData.vertices.size() << '\n';
+        return false;
+    }
+    if (dx12Data.faces.size() != cpuData.faces.size()) {
+        std::cerr << "[Check] Face count mismatch: DX12=" << dx12Data.faces.size()
+                  << ", CPU=" << cpuData.faces.size() << '\n';
+        return false;
+    }
+
+    for (std::size_t i = 0; i < dx12Data.vertices.size(); ++i) {
+        const glm::vec3& a = dx12Data.vertices[i];
+        const glm::vec3& b = cpuData.vertices[i];
+        if (std::abs(a.x - b.x) > positionEpsilon ||
+            std::abs(a.y - b.y) > positionEpsilon ||
+            std::abs(a.z - b.z) > positionEpsilon) {
+            std::cerr << "[Check] Vertex mismatch at index " << i
+                      << ": DX12=(" << a.x << ", " << a.y << ", " << a.z
+                      << "), CPU=(" << b.x << ", " << b.y << ", " << b.z << ")\n";
+            return false;
+        }
+    }
+
+    for (std::size_t i = 0; i < dx12Data.faces.size(); ++i) {
+        const glm::ivec4& a = dx12Data.faces[i];
+        const glm::ivec4& b = cpuData.faces[i];
+        if (a.x != b.x || a.y != b.y || a.z != b.z || a.w != b.w) {
+            std::cerr << "[Check] Face mismatch at index " << i
+                      << ": DX12=(" << a.x << ", " << a.y << ", " << a.z << ", " << a.w
+                      << "), CPU=(" << b.x << ", " << b.y << ", " << b.z << ", " << b.w << ")\n";
+            return false;
+        }
+    }
+
+    return true;
+}
+
 void EdgefriendDX12::SetIters(int i) {
+    if (i <= 0) {
+        throw std::invalid_argument("iters must be > 0.");
+    }
     iters = i;
 }
 
 void EdgefriendDX12::ComputeMemory(int iter, Edgefriend::EdgefriendGeometry orig){
+    if (iter <= 0) {
+        result = std::move(orig);
+        return;
+    }
 
     for (int i = 0; i < iter; i++) {
-        int oV = orig.positions.size();
-        result.positions.resize(oV + 3 * orig.valenceStartInfos.size());
-        result.indices.resize(orig.indices.size() * 4);
-        result.friendsAndSharpnesses.resize(orig.indices.size());
-        result.valenceStartInfos.resize(result.positions.size());
-        orig = std::move(result);
+        Edgefriend::EdgefriendGeometry next;
+        const auto oldVertexCount = orig.positions.size();
+        next.positions.resize(oldVertexCount + 3 * orig.valenceStartInfos.size());
+        next.indices.resize(orig.indices.size() * 4);
+        next.friendsAndSharpnesses.resize(orig.indices.size());
+        next.valenceStartInfos.resize(next.positions.size());
+        orig = std::move(next);
     }
     result = std::move(orig);
-    
 }

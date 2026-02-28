@@ -9,6 +9,7 @@
 #include <fstream>
 #include <string>
 #include <sstream>
+#include <filesystem>
 #include <DirectXMath.h>
 
 #include "rapidobj.hpp"
@@ -23,6 +24,7 @@ using namespace DirectX;
 
 class EdgefriendDX12 {
 public:
+    ~EdgefriendDX12();
 
     struct ConstantBufferCS
     {
@@ -32,30 +34,19 @@ public:
     };
 
     void OnInit();
+    bool RunAndCompareWithCpu(float positionEpsilon = 2e-5f);
 
     void SetIters(int i);
 
 private:
-    int iters;
+    static constexpr UINT kComputeThreadsPerGroup = 32;
+    int iters = 1;
 
-    std::filesystem::path file = "C:/Users/17480/Desktop/test/spot_quadrangulated.obj";
+    std::filesystem::path file = "spot_quadrangulated.obj";
 
     Edgefriend::EdgefriendGeometry orig_geometry;
-    Edgefriend::EdgefriendGeometry new_geometry;
 
     Edgefriend::EdgefriendGeometry result;
-
-    struct oldSize {
-        int F;
-        int V;
-        float sharpnessFactor;
-    };
-
-    struct newSize {
-        int F;
-        int V;
-        float sharpnessFactor;
-    };
 
     enum ComputeRootParameters : UINT32
     {
@@ -79,7 +70,7 @@ private:
         DescriptorCount
     };
 
-    ID3D12Device* m_device;
+    ComPtr<ID3D12Device> m_device;
     ComPtr<ID3D12RootSignature> m_rootSignature;
     ComPtr<ID3D12PipelineState> m_pipelineState;
     ComPtr<ID3D12CommandAllocator> m_commandAllocator;
@@ -104,14 +95,11 @@ private:
     ComPtr<ID3D12Resource> m_valenceStartInfoBufferOut;
 
     ComPtr<ID3D12DescriptorHeap> m_srvUavHeap;
-    UINT m_srvUavDescriptorSize;
+    UINT m_srvUavDescriptorSize = 0;
 
     ComPtr<ID3D12Fence> m_renderContextFence;
-    UINT64 m_renderContextFenceValue;
-    HANDLE m_renderContextFenceEvent;
-
-    ComPtr<ID3D12Fence> m_threadFences;
-    volatile HANDLE m_threadFenceEvents;
+    UINT64 m_renderContextFenceValue = 0;
+    HANDLE m_renderContextFenceEvent = nullptr;
 
     
 
@@ -120,9 +108,10 @@ private:
     void LoadAssets();
 
 
-    void CreateBuffers();
     void CreateSrvUavViews();
     void SetBuffers();
+    void BindComputeState();
+    void SwapGeometryBuffers();
 
     void CreateHeapAndViews();
 
@@ -131,13 +120,12 @@ private:
 
     void ComputeMemory(int iter, Edgefriend::EdgefriendGeometry orig);
 
-    static int align_256(int size) {
-        return (size + 255) & ~255;
-    }
-
 
     void LoadObj();
     void WriteObj();
+    void WriteObj(const std::filesystem::path& outputPath, const Edgefriend::EdgefriendGeometry& geometry) const;
+    Edgefriend::EdgefriendGeometry RunCpuSubdivision() const;
+    bool CompareObjFiles(const std::filesystem::path& dx12Path, const std::filesystem::path& cpuPath, float positionEpsilon) const;
     void PreProcess(std::vector<glm::vec3> oldPositions,
         std::vector<int> oldIndices,
         std::vector<int> oldIndicesOffsets,
